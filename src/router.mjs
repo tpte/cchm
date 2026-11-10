@@ -39,6 +39,14 @@ const OPENROUTER_KEY =
   process.env.OPENROUTER_API_KEY ||
   readKey(`${process.env.HERMES_ENV_FILE || `${process.env.HOME}/.hermes/.env`}`, 'OPENROUTER_API_KEY');
 
+// Silk Compute：同一批 abliterated 模型（Kimi K3.1 Pro / DeepSeek 1017 / GLM-5.3 / Hy4），
+// 原生支援 Anthropic Messages，1M context、8 並發、prompt caching，價格約為 WildWest 的 1/2～1/4.5。
+// 沒有金鑰就整條車道自動停用（不影響既有行為）。
+const SILK_KEY =
+  process.env.SILK_API_KEY ||
+  readKey(`${process.env.HOME}/.hermes/.secrets/silk.env`, 'SILK_API_KEY') ||
+  readKey(`${process.env.HERMES_ENV_FILE || `${process.env.HOME}/.hermes/.env`}`, 'SILK_API_KEY');
+
 if (!OPENROUTER_KEY) {
   console.error('[cchm] 缺 OPENROUTER_API_KEY（~/.hermes/.env）');
   process.exit(1);
@@ -50,6 +58,7 @@ if (!WILDWEST_KEY) {
 const UPSTREAMS = {
   wildwest:   { host: 'wildwestapi.com', port: 443, key: WILDWEST_KEY },
   openrouter: { host: 'openrouter.ai', port: 443, pathPrefix: '/api', key: OPENROUTER_KEY },
+  silk:       { host: 'api.silkcompute.com', port: 443, key: SILK_KEY },
 };
 
 /* ── 車道定義（/v1/models 與文件用；實際路由仍看 model 名稱） ── */
@@ -58,6 +67,10 @@ const LANES = {
   worker: { model: 'deepseek/deepseek-v4.1-flash-1017:nitro', upstream: 'openrouter', note: '工作手：寫碼、測試、除錯' },
   heavy:  { model: 'hh-deepseek-v4.1-flash-1017',             upstream: 'wildwest',   note: '重車道：輸出短、動作導向' },
 };
+if (SILK_KEY) {
+  LANES.silk = { model: 'deepseek-v4.1-flash-1017-uncensored', upstream: 'silk', note: 'Silk 無審核車道（Anthropic 原生、8 並發）' };
+  LANES.silkPro = { model: 'kimi-k3.1-pro-uncensored', upstream: 'silk', note: 'Silk 最強模型（貴）' };
+}
 
 // hh- 前綴 = 同名模型改走 WildWest 的 outlaw 端點
 //   實測 2026-11-10：outlaw 版直接輸出動作塊，輸出精簡；適合攻堅/枚舉，不適合長篇規劃
@@ -75,9 +88,12 @@ const ROUTE_RULES = [
 // 調度腦：預設走 wildwest 的 outlaw 版（無審核，實測 p50 2.9s，已是無審核陣營最快）；
 // CCHM_BRAIN_LANE=fast → 走 openrouter 官方 mimo-flash（實測 0.83s、$0.14/M，快又便宜，但**有審查、實測會拒繞限流類請求**）
 // 實測 2026-11-10：ultraspeed 版 $4.35/$8.7、1.32s 且明確拒絕該類請求 → 沒有任何優勢，已移除
+// CCHM_BRAIN_LANE=uncensored → 走 Silk 的 deepseek-v4.1-flash-1017-uncensored（無審核、$0.60/$2.40、OpenAI/Anthropic 雙介面）
 const BRAIN_MODEL = process.env.CCHM_BRAIN_LANE === 'fast'
   ? (process.env.CCHM_BRAIN_FAST_MODEL || 'xiaomi/mimo-v2.6-flash')
-  : 'mimo-v2.6-flash-outlaw';
+  : process.env.CCHM_BRAIN_LANE === 'silk'
+    ? (process.env.CCHM_BRAIN_SILK_MODEL || 'deepseek-v4.1-flash-1017-uncensored')
+    : 'mimo-v2.6-flash-outlaw';
 
 // Claude Code 只認自家模型名，遇到 mimo/deepseek 會警告 "doesn't recognize the model"，
 // 連帶影響它對 context window / thinking 的假設。所以在設定檔用官方名字，這裡翻成真模型。
@@ -90,6 +106,8 @@ const CLAUDE_ALIAS = [
 function normalizeModel(model) {
   const m = String(model || '');
   for (const [re, real] of CLAUDE_ALIAS) if (re.test(m)) return real;
+  // 沒有 Silk 金鑰時，把 Silk 的 -uncensored 名對到 WildWest 的 -outlaw 名（同一批模型，只是命名不同）
+  if (!SILK_KEY && /-uncensored$/i.test(m)) return m.replace(/-uncensored$/i, '-outlaw');
   // 保險：任何其他 claude-* 名字一律導到調度腦，絕不讓它原樣打到 OpenRouter 的真 Claude（帳單會爆）
   if (/^claude/i.test(m)) return BRAIN_MODEL;
   for (const [prefix, real] of Object.entries(ALIAS_MAP)) {
@@ -106,6 +124,7 @@ function routeFor(rawModel, realModel) {
   if (raw.startsWith('hh-')) return process.env.CCHM_HEAVY_ROUTE || 'wildwest';
   const m = String(realModel || '').toLowerCase();
   if (m.includes('/')) return 'openrouter';      // OpenRouter 命名（vendor/model）一律走 openrouter
+  if (m.includes('uncensored')) return SILK_KEY ? 'silk' : 'wildwest';  // Silk 專屬命名
   if (m.includes('outlaw')) return 'wildwest';   // outlaw 版只存在於 wildwest（實測真名直送 openrouter 會失敗）
   if (m.includes('mimo')) return 'wildwest';
   if (m.includes('deepseek')) return 'openrouter';
@@ -122,6 +141,13 @@ function fallbackFor(model, target) {
   // 調度腦也有備援：wildwest 掛掉或擋住時改走 openrouter 的 mimo（失去無審核，但整條不會死）
   if (target === 'wildwest' && /mimo/i.test(model)) {
     return { target: 'openrouter', model: process.env.CCHM_BRAIN_FALLBACK || 'xiaomi/mimo-v2.6-flash' };
+  }
+  // Silk ⇄ WildWest：同一批 abliterated 模型、只是命名不同（-uncensored ⇄ -outlaw）
+  if (target === 'silk' && SILK_KEY) {
+    return { target: 'wildwest', model: String(model).replace(/-uncensored$/, '-outlaw') };
+  }
+  if (target === 'wildwest' && SILK_KEY && /-outlaw$/.test(model)) {
+    return { target: 'silk', model: String(model).replace(/-outlaw$/, '-uncensored') };
   }
   return null;
 }
@@ -208,6 +234,10 @@ function forward(rawBody, req, res, t0) {
   const attempt = (whichName, modelName, isRetry) => {
     const which = UPSTREAMS[whichName];
     if (!which.key) {
+      if (!isRetry && fb && UPSTREAMS[fb.target]?.key) {
+        console.log(`[cchm] ${whichName} 沒有金鑰 → 改用 ${fb.target} (${fb.model})`);
+        return attempt(fb.target, fb.model, true);
+      }
       res.writeHead(503, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: `cchm: ${whichName} 沒有金鑰` } }));
     }
@@ -323,7 +353,7 @@ const server = http.createServer((req, res) => {
       uptime_s: Math.round((Date.now() - STARTED) / 1000),
       routes: Object.keys(UPSTREAMS), lanes: Object.keys(LANES),
       auth: REQUIRED_TOKEN ? 'token' : 'open',
-      keys: { wildwest: !!WILDWEST_KEY, openrouter: !!OPENROUTER_KEY },
+      keys: { wildwest: !!WILDWEST_KEY, openrouter: !!OPENROUTER_KEY, silk: !!SILK_KEY },
     }));
   }
 

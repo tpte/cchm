@@ -47,8 +47,19 @@
 **結論**：outlaw 重車道不是「快車道」，比工作手慢約 5 倍。舊 README 寫「快一倍」不成立，已修正。
 端到端實測：`claude -p` 走 sonnet 名 → router → mimo，10 秒內完成；Task 子代理 → nitro 594ms。
 
+### 2026-11-10 第二輪：接 Silk Compute（待實測延遲）
+
+- router 加 `UPSTREAMS.silk`（`api.silkcompute.com`，Anthropic Messages 原生），沒有金鑰就自動停用
+- `CCHM_BRAIN_LANE=silk` → 調度腦走 `deepseek-v4.1-flash-1017-uncensored`
+- Silk ⇄ WildWest 互為備援：`-uncensored` ⇄ `-outlaw` 自動改名；無 Silk 金鑰時也自動降級
+- 查價結論：同一批 abliterated 模型，Silk 比 WildWest 便宜 2～4.5 倍（1017：$0.28/$1.00 vs $1.25/$2.50）；
+  Kimi K3.1 Pro 輸出 $15 vs $37.5。Silk 沒有 MiMo。
+- **未驗**：Silk 的實際首字延遲與拒絕率（需要 API key，$5 起預付）
+
 ## 待辦（依價值排序）
 
+0. **Silk 實測**（阻塞中：需要 key）：拿到 `SILK_API_KEY` 後跑 `scripts/cchm-doctor` 加 silk 段，
+   量 p50 與拒絕率，若 <2s 就把預設調度腦切到 silk（目前 wildwest 2.9s、貴 4.5 倍）
 1. **拒絕自動換道（串流版）**：目前只在 HTTP 錯誤層換道。SSE 已吐出的內容無法回捲，所以「內容級」refusal 偵測**刻意沒做**——做了只會讓使用者看到重複內容。真正可行的是「派出前升級」：偵測 prompt 含高風險主題時自動改走 outlaw 車道（`CCHM_AUTO_ESCALATE`）。要做的話先設計誤判成本。
 2. **用量成本換算**：`usage.jsonl` 目前只有 bytes 與延遲，沒有 token 數與金額。下一步在 router 解析 SSE 最後的 `message_delta.usage`，累計每日成本。
 3. **第二家無審核上游**：現在 wildwest 是唯一 outlaw 來源。已補「腦的備援」（wildwest 掛 → openrouter 的 `xiaomi/mimo-v2.6-flash`），但那是審核版，不算第二家無審核供應商。要找第二家並在 `UPSTREAMS` 加一條（需要模型名對照）。

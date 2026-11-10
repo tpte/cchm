@@ -27,6 +27,7 @@ journalctl --user -u cchm-router.service -n 50
 |---|---|---|
 | `WILDWEST_API_KEY` | `~/.hermes/.secrets/wildwest.env` 或 `~/.hermes/.env` | 調度腦（mimo）、重車道（outlaw） |
 | `OPENROUTER_API_KEY` | `~/.hermes/.env` | 工作手（1017 nitro）、`/v1/models` 來源 |
+| `SILK_API_KEY` | `~/.hermes/.secrets/silk.env` 或 `~/.hermes/.env` | Silk Compute（無審核車道，選用；沒有就不啟用） |
 
 `bin/cchm` 會自己讀檔並 export；router 自己也讀同一組檔。**不要**把金鑰寫進 repo 或 log。
 
@@ -51,12 +52,14 @@ journalctl --user -u cchm-router.service -n 50
 | `CCHM_MAX_OUTPUT` | `64000` | 最大輸出 token |
 | `CCHM_FAILOVER_CODES` | `403,429,500,502,503,504,529` | 這些狀態碼觸發換道（403 = 政策封鎖，換 outlaw） |
 | `CCHM_REQUIRE_TOKEN` | `cchm-local` | 本地權杖 |
+| `CCHM_FAILOVER_CODES` 補充 | — | Silk ⇄ WildWest 也互為備援（`-uncensored` ⇄ `-outlaw` 自動改名） |
 | `CCHM_TOKENIZER_MODEL` | `mimo-v2.6-flash-outlaw` | count_tokens 用的 tokenizer |
 | `CCHM_LOG_DIR` | `~/cchm/.exp/logs` | 用量日誌目錄 |
 | `CCHM_BRAIN_MODEL` | `claude-sonnet-4-5` | 主對話模型名（可改真模型名） |
-| `CCHM_BRAIN_LANE` | `outlaw` | `fast` = 調度腦改走 openrouter 的 `xiaomi/mimo-v2.6-flash`（0.83s、$0.14/M，快又便宜，**但有審查、實測會拒繞限流類請求**） |
+| `CCHM_BRAIN_LANE` | `outlaw` | `silk` = 走 Silk 的 `deepseek-v4.1-flash-1017-uncensored`（無審核、$0.28/$1.00、Anthropic 原生）； `fast` = 調度腦改走 openrouter 的 `xiaomi/mimo-v2.6-flash`（0.83s、$0.14/M，快又便宜，**但有審查、實測會拒繞限流類請求**） |
 | `CCHM_BRAIN_FAST_MODEL` | `xiaomi/mimo-v2.6-flash` | fast 車道的腦模型（ultraspeed 實測貴 4 倍又會拒，已棄用） |
 | `CCHM_BRAIN_FALLBACK` | `xiaomi/mimo-v2.6-flash` | wildwest 掛掉／擋住時的腦備援（openrouter） |
+| `CCHM_BRAIN_SILK_MODEL` | `deepseek-v4.1-flash-1017-uncensored` | `CCHM_BRAIN_LANE=silk` 時用的模型 |
 | `CCHM_DEFAULT_ROUTE` | `openrouter` | 認不出的 model 走哪家 |
 | `CCHM_HEAVY_ROUTE` | `wildwest` | `hh-` 前綴走哪家 |
 

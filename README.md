@@ -77,6 +77,21 @@ scripts/cchm-doctor      # router／權杖／三車道延遲／count_tokens／�
 | 工作手 | openrouter `deepseek-v4.1-flash-1017:nitro` | $0.006 | $0.50 | 0.5s | 有審查 |
 | ~~fast（已棄用）~~ | openrouter `xiaomi/mimo-v2.6-pro-ultraspeed` | $4.35 | $8.70 | 1.32s | 有審查，實測明確拒絕 |
 
+## 無審核供應商比較（每 1M token，2026-11-10 查價）
+
+| 供應商 | 代表模型 | 輸入 | 輸出 | 格式 | 備註 |
+|---|---|---|---|---|---|
+| **Silk Compute** | `deepseek-v4.1-flash-1017-uncensored` | **$0.28** | **$1.00** | Anthropic ＋ OpenAI 原生 | 1M ctx、8 並發、1M 可快取、無留存；**無 MiMo** |
+| WildWest（現用） | `mimo-v2.6-flash-outlaw` | $1.00 | $2.00 | Anthropic | 有 MiMo，通路較慢 |
+| WildWest | `glm-5.3-flash-outlaw` | $0.30 | $1.00 | Anthropic | 便宜但實測 4.4s |
+| Venice | `deepseek-v4-1-flash-1017-uncensored` | $0.33 | $1.32 | OpenAI 相容 | 有 E2EE 版、隱私分級 |
+| ArliAI | 月費制 | $15/月起 | 無限 | OpenAI 相容 | context 上限 32K（$15）～512K（$160） |
+| Featherless | 4 萬+ 開源模型 | $25/月（限人工聊天）／$50/月起按量 | — | OpenAI 相容 | 大量自動化要用 $50 開發方案 |
+| Chutes | Qwen3.8-27B 等 | 約 $0.12 | 約 $0.37 | OpenAI 相容 | 最便宜，但模型較小 |
+
+Silk 已接進 router（`UPSTREAMS.silk`）：有 `SILK_API_KEY` 就自動啟用，
+`CCHM_BRAIN_LANE=silk` 可把調度腦切過去；沒有金鑰時 `-uncensored` 名會自動對到 WildWest 的 `-outlaw`。
+
 延遲差異主要來自**通路**不是模型：同一顆 mimo，wildwest 中轉 2.9s、openrouter 直連 0.83s。
 wildwest 11 顆模型實測，最快的仍是現用的 mimo-outlaw（2.9s），換無審核模型求快沒有空間。
 
