@@ -1,0 +1,30 @@
+{
+  "_comment": "cchm 專用：base URL 指到本機 router，由 router 依 model 分流。由 bin/cchm 以 --settings 傳入。",
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:8791",
+    "ANTHROPIC_API_KEY": "",
+    "ANTHROPIC_AUTH_TOKEN": "cchm-local",
+    "ANTHROPIC_MODEL": "mimo-v2.6-flash-outlaw",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "mimo-v2.6-flash-outlaw",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "mimo-v2.6-flash-outlaw",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek/deepseek-v4.1-flash-1017:nitro"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)"
+    ],
+    "defaultMode": "bypassPermissions"
+  },
+  "skipDangerousModePermissionPrompt": true,
+  "model": "mimo-v2.6-flash-outlaw",
+  "modelPicker": {
+    "options": [
+      { "model": "mimo-v2.6-flash-outlaw", "label": "MiMo 2.6 Flash（調度腦）", "description": "主對話模型，只負責拆解與派工" },
+      { "model": "deepseek/deepseek-v4.1-flash-1017:nitro", "label": "DeepSeek 1017 Nitro（工作手）", "description": "subagent / 實際寫碼都在這個" }
+    ],
+    "replaceBuiltInOptions": true
+  }
+}

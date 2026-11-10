@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# cchm — Claude Code Hacking Mode 啟動器
+#
+# 架構：claude → 本機 router (src/router.mjs) → 依 model 分流
+#   mimo-v2.6-flash-outlaw        (WildWest)   調度腦：只拆任務、派工
+#   deepseek-v4.1-flash-1017:nitro (OpenRouter) 工作手：實際寫碼，subagent 全用它
+#
+# 路由由 router 判斷，所以這裡只要把 ANTHROPIC_BASE_URL 指到本機即可。
+set -euo pipefail
+
+PORT="${CCHM_PORT:-8791}"
+ENVF="${HERMES_ENV_FILE:-$HOME/.hermes/.env}"
+
+# 先決定主模型（給 router 的 log 也好看）
+BRAIN="${CCHM_BRAIN_MODEL:-mimo-v2.6-flash-outlaw}"          # 調度腦（WildWest）
+WORKER="${CCHM_WORKER_MODEL:-deepseek/deepseek-v4.1-flash-1017:nitro}" # 工作手（OpenRouter）
+
+if [ -z "${WILDWEST_API_KEY:-}" ] || [ -z "${OPENROUTER_API_KEY:-}" ]; then
+  if [ -r "$ENVF" ]; then
+    WILDWEST_API_KEY="${WILDWEST_API_KEY:-$(grep -m1 '^WILDWEST_API_KEY=' "$ENVF" | cut -d= -f2- | tr -d '"\r')}"
+    OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-$(grep -m1 '^OPENROUTER_API_KEY=' "$ENVF" | cut -d= -f2- | tr -d '"\r')}"
+  fi
+fi
+export WILDWEST_API_KEY OPENROUTER_API_KEY
+
+# 上下文視窗：deepseek-v4.1-flash-1017 實測可吃到 786k；MiMo 保守抓 WildWest 常見 256k
+WINDOW="${CCHM_CONTEXT:-524288}"
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS="$WINDOW"
+export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$WINDOW"
+
+# DeepSeek 是 reasoning 模型，thinking 吃預算，同 ccun 教訓設大一點避免被截斷
+export CLAUDE_CODE_MAX_OUTPUT_TOKENS="${CCHM_MAX_OUTPUT:-64000}"
+export API_TIMEOUT_MS="${CCHM_API_TIMEOUT_MS:-1200000}"
+export BASH_DEFAULT_TIMEOUT_MS="${CCHM_BASH_TIMEOUT_MS:-300000}"
+
+# 沒在跑就先把 router 拉起來（port 被占就沿用既有 router）
+if ! curl -s -o /dev/null "http://127.0.0.1:$PORT/healthz"; then
+  node "$(dirname "$0")/../src/router.mjs" &
+  ROUTER_PID=$!
+  trap 'kill $ROUTER_PID 2>/dev/null' EXIT
+  sleep 0.4
+fi
+
+CLAUDE_BIN="${CCHM_CLAUDE_BIN:-$HOME/.local/share/mise/shims/claude}"
+[ -x "$CLAUDE_BIN" ] || CLAUDE_BIN="$(command -v claude || true)"
+[ -n "$CLAUDE_BIN" ] || { echo "cchm: 找不到 claude" >&2; exit 1; }
+
+# 主模型一律釘死成調度腦；subagent 用工作手。skill/agent 定義會再覆寫細節。
+exec "$CLAUDE_BIN" \
+  --model "$BRAIN" \
+  --settings "$HOME/cchm/settings/claude-settings.json" \
+  "$@"
