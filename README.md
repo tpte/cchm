@@ -47,4 +47,3 @@ cp agents/hacker.md ~/.claude/agents/cchm-hacker.md
 - 調度腦提示在 `agents/dispatcher.md`，啟動器用 `--append-system-prompt` 灌進主對話。
 - 工作手 agent 定義在 `agents/hacker.md`，裝到 `~/.claude/agents/cchm-hacker.md`。
 - 不影響原 `claude` / `ccun` / `ccds`——環境變數只在這個 process 內生效。
-# temp bad change
