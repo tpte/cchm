@@ -54,12 +54,18 @@
 - Silk ⇄ WildWest 互為備援：`-uncensored` ⇄ `-outlaw` 自動改名；無 Silk 金鑰時也自動降級
 - 查價結論：同一批 abliterated 模型，Silk 比 WildWest 便宜 2～4.5 倍（1017：$0.28/$1.00 vs $1.25/$2.50）；
   Kimi K3.1 Pro 輸出 $15 vs $37.5。Silk 沒有 MiMo。
-- **未驗**：Silk 的實際首字延遲與拒絕率（需要 API key，$5 起預付）
+- **已實測（2026-11-10，金鑰到位後）**：
+  - 速度：deepseek-1017 p50 3.36s（串流首字 3.0–5.2s）、glm-5.3-flash 首字 1.7–1.9s 但整體 4.4s → **都不比現用 mimo 快**
+  - 成本：真實 token 記帳顯示主對話 $0.0069 vs WildWest $0.0235（**便宜 3.4 倍**）；一趟含 subagent 約 $0.015
+  - 能力：寫可執行 Python 5/5、tool calling 正確、Claude Code 端到端成功；但逐行計數類任務兩款都算錯
+  - 審查：6 題敏感探測（釣魚／假證件/勒索軟體/繞付費牆/入侵 Wi-Fi／仇恨言論）**0/6 拒絕**；對照組官方 mimo 拒 4–5/6
+  - 相容性：streaming／tools／thinking／8 並發皆通；count_tokens 不支援（本地估算）
+- router 現在會記每次請求的 in/out token 與換算成本（`usage.jsonl` 的 `in_tokens`/`out_tokens`/`cost_usd`）
 
 ## 待辦（依價值排序）
 
-0. **Silk 實測**（阻塞中：需要 key）：拿到 `SILK_API_KEY` 後跑 `scripts/cchm-doctor` 加 silk 段，
-   量 p50 與拒絕率，若 <2s 就把預設調度腦切到 silk（目前 wildwest 2.9s、貴 4.5 倍）
+0. **Silk 要不要當預設**（等使用者決定）：實測成本便宜 3.4 倍但速度沒贏（3.4s vs 2.9s），
+   屬取捨而非純改善，因此不自動切換
 1. **拒絕自動換道（串流版）**：目前只在 HTTP 錯誤層換道。SSE 已吐出的內容無法回捲，所以「內容級」refusal 偵測**刻意沒做**——做了只會讓使用者看到重複內容。真正可行的是「派出前升級」：偵測 prompt 含高風險主題時自動改走 outlaw 車道（`CCHM_AUTO_ESCALATE`）。要做的話先設計誤判成本。
 2. **用量成本換算**：`usage.jsonl` 目前只有 bytes 與延遲，沒有 token 數與金額。下一步在 router 解析 SSE 最後的 `message_delta.usage`，累計每日成本。
 3. **第二家無審核上游**：現在 wildwest 是唯一 outlaw 來源。已補「腦的備援」（wildwest 掛 → openrouter 的 `xiaomi/mimo-v2.6-flash`），但那是審核版，不算第二家無審核供應商。要找第二家並在 `UPSTREAMS` 加一條（需要模型名對照）。

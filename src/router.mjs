@@ -152,6 +152,43 @@ function fallbackFor(model, target) {
   return null;
 }
 
+/* ── 單價表（USD per 1M tokens：[input, output]）──
+   來源：WildWest /v1/models、OpenRouter /api/v1/models、Silk llms.txt（2026-11-10 查價） */
+const COST_PER_M = {
+  wildwest: {
+    'mimo-v2.6-flash-outlaw': [1.00, 2.00],
+    'glm-5.3-flash-outlaw': [0.30, 1.00],
+    'glm-5.3-outlaw': [2.00, 5.00],
+    'glm-5.3-flash-cyber': [0.30, 1.00],
+    'apex-flash': [0.30, 1.00],
+    'deepseek-v4.1-flash-1017-outlaw': [1.25, 2.50],
+    'deepseek-v4.1-flash-lite-1017-outlaw': [0.36, 1.44],
+    'kimi-k3.1-pro-outlaw': [7.50, 37.50],
+    'hy4-outlaw': [3.20, 6.40],
+    'qwen3.8-27b-outlaw': [1.50, 5.00],
+    'qwen3.8-27b-fast-outlaw': [1.75, 5.50],
+  },
+  openrouter: {
+    'xiaomi/mimo-v2.6-flash': [0.14, 0.28],
+    'xiaomi/mimo-v2.6-pro-ultraspeed': [4.35, 8.70],
+    'deepseek/deepseek-v4.1-flash-1017:nitro': [0.006, 0.50],
+  },
+  silk: {
+    'deepseek-v4.1-flash-1017-uncensored': [0.28, 1.00],
+    'glm-5.3-flash-uncensored': [0.24, 1.00],
+    'kimi-k3.1-pro-uncensored': [5.00, 15.00],
+    'hy4-uncensored': [1.60, 3.20],
+    'glm-5.3-uncensored': [2.00, 4.00],
+  },
+};
+
+// 取字串裡「最後一個」符合的值（SSE 的 usage 會在 message_start 與 message_delta 各出現一次）
+function lastMatch(str, re) {
+  let m, last = null;
+  while ((m = re.exec(str))) last = Number(m[1]);
+  return last;
+}
+
 /* ── 連線池 & 用量日誌 ───────────────────────────────── */
 const agent = new https.Agent({ keepAlive: true, keepAliveMsecs: 30_000, maxSockets: 64 });
 
@@ -261,11 +298,24 @@ function forward(rawBody, req, res, t0) {
       }
       res.writeHead(ur.statusCode, ur.headers);
       let bytes = 0;
-      ur.on('data', (c) => { bytes += c.length; });
+      let tail = '';
+      ur.on('data', (c) => {
+        bytes += c.length;
+        // SSE 的 usage 在 message_start（input_tokens）與 message_delta（output_tokens）裡，
+        // 只留最後 4KB 就夠（body 太大的話不解析，避免吃記憶體）
+        if (bytes < 4_000_000) tail = (tail + c.toString('utf8')).slice(-4096);
+      });
       ur.on('end', () => {
         const ms = Date.now() - t0;
-        console.log(`[cchm] ${req.method} ${req.url} model=${modelName} → ${whichName} ${ur.statusCode} ${bytes}B ${ms}ms${isRetry ? ' (retry)' : ''}`);
-        logUsage({ ts: new Date().toISOString(), op: 'messages', model: modelName, upstream: whichName, status: ur.statusCode, bytes, ms, retry: !!isRetry });
+        const inTok = lastMatch(tail, /"input_tokens":(\d+)/g);
+        const outTok = lastMatch(tail, /"output_tokens":(\d+)/g);
+        const bill = COST_PER_M[whichName]?.[modelName];
+        const cost = bill && inTok != null && outTok != null
+          ? Number(((inTok / 1e6) * bill[0] + (outTok / 1e6) * bill[1]).toFixed(6))
+          : null;
+        console.log(`[cchm] ${req.method} ${req.url} model=${modelName} → ${whichName} ${ur.statusCode} ${bytes}B ${ms}ms` +
+          (inTok != null ? ` in=${inTok} out=${outTok}` : '') + (cost != null ? ` $${cost}` : '') + (isRetry ? ' (retry)' : ''));
+        logUsage({ ts: new Date().toISOString(), op: 'messages', model: modelName, upstream: whichName, status: ur.statusCode, bytes, ms, in_tokens: inTok, out_tokens: outTok, cost_usd: cost, retry: !!isRetry });
       });
       ur.pipe(res);
     });

@@ -77,6 +77,28 @@ scripts/cchm-doctor      # router／權杖／三車道延遲／count_tokens／�
 | 工作手 | openrouter `deepseek-v4.1-flash-1017:nitro` | $0.006 | $0.50 | 0.5s | 有審查 |
 | ~~fast（已棄用）~~ | openrouter `xiaomi/mimo-v2.6-pro-ultraspeed` | $4.35 | $8.70 | 1.32s | 有審查，實測明確拒絕 |
 
+## Silk Compute 實測（2026-11-10，便宜兩款）
+
+| 項目 | deepseek-v4.1-flash-1017-uncensored | glm-5.3-flash-uncensored | 現用 mimo-2.6-outlaw |
+|---|---|---|---|
+| 單價 in/out（每 1M） | $0.28 / $1.00 | $0.24 / $1.00 | $1.00 / $2.00 |
+| 簡單請求 p50 | 3.36s（波動 2.0–5.2s） | 4.38s | 2.9s |
+| 串流首字 | 3.0–5.2s | **1.7–1.9s** | 約 2.0s |
+| 寫可執行 Python | 5/5 測試通過 | 5/5 | — |
+| tool calling（Anthropic 格式） | ✅ 正確回 tool_use | ✅ | ✅ |
+| 逐行計數類任務 | ❌ 算錯（答 36，正解 24） | ❌ 算錯（答 21） | — |
+| 6 題敏感探測拒絕數 | **0 / 6** | **0 / 6** | **0 / 6** |
+| Claude Code 端到端 | ✅ 建檔＋執行＋回報正確 | 未測 | ✅ |
+
+對照組（OpenRouter 官方 `xiaomi/mimo-v2.6-flash`，有審核）同樣 6 題拒絕 **4–5 題**，證明探測本身能偵測到拒絕。
+
+**成本實測**（Claude Code 一次含 subagent 的任務，router 記到的真實 token）：
+主對話 22,051 in / 714 out = **$0.0069**；同等量走 WildWest mimo 是 $0.0235（貴 3.4 倍）；
+subagent 走 OpenRouter nitro 是 $0.0040。整趟約 **$0.015**。
+
+Agent 相容性：Anthropic Messages 原生、streaming、tool calling、thinking blocks、8 並發都通；
+`count_tokens` 不支援（走本地估算）、沒有 web search 這類內建工具。
+
 ## 無審核供應商比較（每 1M token，2026-11-10 查價）
 
 | 供應商 | 代表模型 | 輸入 | 輸出 | 格式 | 備註 |
