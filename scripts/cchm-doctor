@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# cchm-doctor — 一鍵自檢：router、金鑰、三條車道、count_tokens、延遲表、用量統計
+# 用法：scripts/cchm-doctor            （預設 127.0.0.1:8791）
+#       CCHM_PORT=8792 scripts/cchm-doctor
+set -uo pipefail
+
+PORT="${CCHM_PORT:-8791}"
+BASE="http://127.0.0.1:$PORT"
+TOKEN="${CCHM_REQUIRE_TOKEN:-cchm-local}"
+USAGE="${CCHM_USAGE_FILE:-$HOME/cchm/.exp/logs/usage.jsonl}"
+fail=0
+
+hr() { printf '%s\n' "──────────────────────────────────────────────"; }
+ok()   { printf '  ✅ %s\n' "$1"; }
+bad()  { printf '  ❌ %s\n' "$1"; fail=$((fail+1)); }
+
+hr; echo "cchm doctor  $(date '+%F %T')"
+hr
+
+# 1) router
+H="$(curl -s --max-time 3 "$BASE/healthz" -H "x-api-key: $TOKEN" || true)"
+if [[ "$H" == *'"ok":true'* ]]; then
+  VER="$(sed -n 's/.*"version":"\([^"]*\)".*/\1/p' <<<"$H")"
+  WB="$(sed -n 's/.*"wildwest":\(true\|false\).*/\1/p' <<<"$H")"
+  OR="$(sed -n 's/.*"openrouter":\(true\|false\).*/\1/p' <<<"$H")"
+  ok "router $VER 在跑（金鑰 ww=$WB openrouter=$OR）"
+else
+  bad "router 沒回應（$BASE/healthz）→ systemctl --user status cchm-router.service"
+  hr; exit 1
+fi
+
+# 2) 權杖
+CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$BASE/v1/models")"
+[[ "$CODE" == "401" ]] && ok "權杖檢查生效（無 token → 401）" || bad "權杖檢查沒生效（無 token 回 $CODE）"
+
+# 3) 三條車道延遲
+echo; echo "  車道延遲（串流首字 / 20 token 請求）"
+for pair in "brain:claude-sonnet-4-5" "worker:claude-haiku-4-5" "heavy:hh-deepseek-v4.1-flash-1017"; do
+  lane="${pair%%:*}"; model="${pair#*:}"
+  out="$(curl -sN -o /tmp/.cchm_probe.$$ -w '%{time_total} %{http_code}' --max-time 40 \
+    -H 'content-type: application/json' -H "x-api-key: $TOKEN" \
+    -d "{\"model\":\"$model\",\"max_tokens\":20,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"say ok\"}]}" \
+    "$BASE/v1/messages" || echo '9.99 000')"
+  t="${out%% *}"; code="${out##* }"
+  real="$(grep -o '"model":"[^"]*"' /tmp/.cchm_probe.$$ 2>/dev/null | head -1 | cut -d'"' -f4)"
+  rm -f /tmp/.cchm_probe.$$
+  if [[ "$code" == "200" ]]; then
+    printf '  ✅ %-7s %-28s → %-34s %ss\n' "$lane" "$model" "${real:-?}" "$t"
+  else
+    printf '  ❌ %-7s %-28s → HTTP %s\n' "$lane" "$model" "$code"; fail=$((fail+1))
+  fi
+done
+
+# 4) count_tokens（OpenRouter 車道原本會 404，這裡要回 200 且有 input_tokens）
+CT="$(curl -s --max-time 20 -X POST "$BASE/v1/messages/count_tokens" \
+  -H 'content-type: application/json' -H "x-api-key: $TOKEN" \
+  -d '{"model":"claude-haiku-4-5","messages":[{"role":"user","content":"count me"}]}')"
+if [[ "$CT" == *'input_tokens'* ]]; then ok "count_tokens 正常：$CT"; else bad "count_tokens 壞掉：${CT:0:80}"; fi
+
+# 5) 用量統計（近 100 筆）
+if [[ -r "$USAGE" ]]; then
+  python3 - "$USAGE" <<'PY'
+import json,sys,statistics
+recs=[]
+for line in open(sys.argv[1]):
+    try: recs.append(json.loads(line))
+    except: pass
+msgs=[r for r in recs if r.get("op")=="messages"][-100:]
+if msgs:
+    ok=[r for r in msgs if r.get("status")==200]
+    fail=[r for r in msgs if r.get("status") not in (200,None) or r.get("error")]
+    lat=[r["ms"] for r in ok if r.get("ms")]
+    p50=int(statistics.median(lat)) if lat else 0
+    print(f"  ℹ️  近 {len(msgs)} 筆請求：成功 {len(ok)}（{len(ok)*100//max(1,len(msgs))}%），p50={p50}ms，失敗/換道 {len(fail)}")
+    fo=[r for r in recs if r.get("op")=="failover"]
+    if fo: print(f"  ℹ️  換道紀錄 {len(fo)} 筆（最後：{fo[-1].get('from')}→{fo[-1].get('to')} {fo[-1].get('status') or fo[-1].get('error','')}）")
+PY
+else
+  echo "  ℹ️  還沒有用量紀錄（$USAGE）"
+fi
+
+hr
+if [[ $fail -eq 0 ]]; then echo "結論：全部通過"; else echo "結論：$fail 項有問題"; fi
+exit $fail

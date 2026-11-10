@@ -1,0 +1,19 @@
+[Unit]
+Description=cchm router (Claude Code 分流端點 127.0.0.1:8791)
+Documentation=file:///home/alan/cchm/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/home/alan/.local/share/mise/shims/node /home/alan/cchm/src/router.mjs
+WorkingDirectory=/home/alan/cchm
+Environment=HOME=/home/alan
+Environment=NODE_ENV=production
+Restart=always
+RestartSec=2
+StandardOutput=append:/home/alan/cchm/.exp/logs/router.log
+StandardError=append:/home/alan/cchm/.exp/logs/router.log
+
+[Install]
+WantedBy=default.target
