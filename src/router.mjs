@@ -41,13 +41,32 @@ const UPSTREAMS = {
 };
 
 // 判斷某個 model 應該送到哪一家。前綴比對，方便之後加模型。
+// hh- 前綴 = heavy hacker 車道：同名模型改走 WildWest outlaw 端點
+//   實測 2026-11-10：outlaw 版回應快一倍（5s vs 9s）且直接輸出動作塊，適合攻堅/暴力枚舉類
+const ALIAS_MAP = {
+  'hh-mimo-v2.6-flash': 'mimo-v2.6-flash-outlaw',
+  'hh-deepseek-v4.1-flash-1017': 'deepseek-v4.1-flash-1017-outlaw',
+};
+
 const ROUTE_RULES = [
   ['mimo', 'wildwest'],       // MiMo 2.6 Flash — 調度腦
   ['deepseek', 'openrouter'], // DeepSeek V4.1 Flash 1017 — 工作手
 ];
 
+function normalizeModel(model) {
+  const m = String(model || '');
+  for (const [prefix, real] of Object.entries(ALIAS_MAP)) {
+    if (m === prefix || m.startsWith(prefix + ':') || m.startsWith(prefix + '-')) {
+      return real + m.slice(prefix.length);
+    }
+    if (m.startsWith(prefix)) return real;
+  }
+  return m;
+}
+
 function routeFor(model) {
   const m = String(model || '').toLowerCase();
+  if (m.startsWith('hh-')) return process.env.CCHM_HEAVY_ROUTE || 'wildwest';
   for (const [prefix, upstream] of ROUTE_RULES) {
     if (m.includes(prefix)) return upstream;
   }
@@ -63,8 +82,11 @@ const server = http.createServer((req, res) => {
 function forward(body, req, res) {
   let parsedBody = {};
   try { parsedBody = JSON.parse(body.toString('utf8') || '{}'); } catch {}
-  const model = parsedBody.model || '';
-  const target = routeFor(model);
+  const rawModel = parsedBody.model || '';
+  const target = routeFor(rawModel);          // 先定路由（hh- 前綴判斷要用原始名）
+  parsedBody.model = normalizeModel(rawModel); // 再換成上游要的真名
+  body = Buffer.from(JSON.stringify(parsedBody));
+  const model = parsedBody.model;
   const up = UPSTREAMS[target];
 
   // /v1/messages 原樣轉發；OpenRouter 要掛 /api 前綴
