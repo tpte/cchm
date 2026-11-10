@@ -114,7 +114,8 @@ case "${1:-}" in
     cd "$REPO"
     [ "$TAG" = "latest" ] && TAG=$(git tag --sort=-creatordate | grep '^promote-' | head -1)
     git rev-parse --verify -q "refs/tags/$TAG" >/dev/null || { echo "沒有 tag $TAG"; exit 1; }
-    git revert --no-edit -q "$TAG..master" || { echo "revert 衝突，手動處理"; exit 1; }
+    if [ -n "$(git status --porcelain --untracked-files=no)" ]; then echo "working tree 有未 commit 變更，先 commit 或清掉再 rollback"; exit 1; fi
+    git revert --no-edit "$TAG..master" || { git revert --abort 2>/dev/null; echo "revert 衝突，已 abort，手動處理"; exit 1; }
     git tag -f latest "$TAG"
     prod_restart && echo "已退回到 $TAG 的狀態（revert commits 已建立）"
     ;;
