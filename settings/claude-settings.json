@@ -8,7 +8,14 @@
     "ANTHROPIC_DEFAULT_OPUS_MODEL": "mimo-v2.6-flash-outlaw",
     "ANTHROPIC_DEFAULT_SONNET_MODEL": "mimo-v2.6-flash-outlaw",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek/deepseek-v4.1-flash-1017:nitro",
-    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek/deepseek-v4.1-flash-1017:nitro"
+    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek/deepseek-v4.1-flash-1017:nitro",
+    "CLAUDECODE": "",
+    "DISABLE_TELEMETRY": "1",
+    "MAX_THINKING_TOKENS": "14000",
+    "BASH_DEFAULT_TIMEOUT_MS": "600000",
+    "BASH_MAX_TIMEOUT_MS": "1800000",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000",
+    "API_TIMEOUT_MS": "1200000"
   },
   "permissions": {
     "allow": [
@@ -23,8 +30,16 @@
   "model": "mimo-v2.6-flash-outlaw",
   "modelPicker": {
     "options": [
-      { "model": "mimo-v2.6-flash-outlaw", "label": "MiMo 2.6 Flash（調度腦）", "description": "主對話模型，只負責拆解與派工" },
-      { "model": "deepseek/deepseek-v4.1-flash-1017:nitro", "label": "DeepSeek 1017 Nitro（工作手）", "description": "subagent / 實際寫碼都在這個" }
+      {
+        "model": "mimo-v2.6-flash-outlaw",
+        "label": "MiMo 2.6 Flash（調度腦）",
+        "description": "主對話模型，只負責拆解與派工"
+      },
+      {
+        "model": "deepseek/deepseek-v4.1-flash-1017:nitro",
+        "label": "DeepSeek 1017 Nitro（工作手）",
+        "description": "subagent / 實際寫碼都在這個"
+      }
     ],
     "replaceBuiltInOptions": true
   }
