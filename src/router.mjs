@@ -72,13 +72,17 @@ const ROUTE_RULES = [
 ];
 // 註：ROUTE_RULES 的比對已搬進 routeFor（需先解析 claude-* 別名），此處保留作為文件說明。
 
+// 調度腦：預設走 wildwest 的 outlaw 版（無審核，實測 p50 3.1s）；
+// 想要快就把 CCHM_BRAIN_LANE 設成 fast → 走 openrouter 的 mimo-pro-ultraspeed（實測 p50 1.2s，但有審核）
+const BRAIN_MODEL = process.env.CCHM_BRAIN_LANE === 'fast'
+  ? (process.env.CCHM_BRAIN_FAST_MODEL || 'xiaomi/mimo-v2.6-pro-ultraspeed')
+  : 'mimo-v2.6-flash-outlaw';
+
 // Claude Code 只認自家模型名，遇到 mimo/deepseek 會警告 "doesn't recognize the model"，
 // 連帶影響它對 context window / thinking 的假設。所以在設定檔用官方名字，這裡翻成真模型。
-//   claude-opus-* / claude-sonnet-* → 調度腦（mimo, wildwest）
-//   claude-haiku-*                  → 工作手（1017 nitro, openrouter）
 const CLAUDE_ALIAS = [
-  [/^claude-opus/i, 'mimo-v2.6-flash-outlaw'],
-  [/^claude-sonnet/i, 'mimo-v2.6-flash-outlaw'],
+  [/^claude-opus/i, BRAIN_MODEL],
+  [/^claude-sonnet/i, BRAIN_MODEL],
   [/^claude-haiku/i, 'deepseek/deepseek-v4.1-flash-1017:nitro'],
 ];
 
@@ -86,7 +90,7 @@ function normalizeModel(model) {
   const m = String(model || '');
   for (const [re, real] of CLAUDE_ALIAS) if (re.test(m)) return real;
   // 保險：任何其他 claude-* 名字一律導到調度腦，絕不讓它原樣打到 OpenRouter 的真 Claude（帳單會爆）
-  if (/^claude/i.test(m)) return 'mimo-v2.6-flash-outlaw';
+  if (/^claude/i.test(m)) return BRAIN_MODEL;
   for (const [prefix, real] of Object.entries(ALIAS_MAP)) {
     if (m === prefix || m.startsWith(prefix + ':') || m.startsWith(prefix + '-')) {
       return real + m.slice(prefix.length);
@@ -100,6 +104,8 @@ function routeFor(rawModel, realModel) {
   const raw = String(rawModel || '').toLowerCase();
   if (raw.startsWith('hh-')) return process.env.CCHM_HEAVY_ROUTE || 'wildwest';
   const m = String(realModel || '').toLowerCase();
+  if (m.includes('/')) return 'openrouter';      // OpenRouter 命名（vendor/model）一律走 openrouter
+  if (m.includes('outlaw')) return 'wildwest';   // outlaw 版只存在於 wildwest（實測真名直送 openrouter 會失敗）
   if (m.includes('mimo')) return 'wildwest';
   if (m.includes('deepseek')) return 'openrouter';
   return process.env.CCHM_DEFAULT_ROUTE || 'openrouter';
@@ -109,8 +115,12 @@ function routeFor(rawModel, realModel) {
 // 目前確定可用的一對：openrouter 的 1017:nitro ⇄ wildwest 的 1017-outlaw（兩邊都實測 200）
 function fallbackFor(model, target) {
   if (target === 'openrouter' && /deepseek/i.test(model)) {
-    const bare = String(model).replace(/^.*\//, '').replace(/:.*$/, '');
+    const bare = String(model).replace(/^.*\//, '').replace(/:.*$/, '').replace(/-outlaw$/, '');
     return { target: 'wildwest', model: `${bare}-outlaw` };
+  }
+  // 調度腦也有備援：wildwest 掛掉或擋住時改走 openrouter 的 mimo（失去無審核，但整條不會死）
+  if (target === 'wildwest' && /mimo/i.test(model)) {
+    return { target: 'openrouter', model: process.env.CCHM_BRAIN_FALLBACK || 'xiaomi/mimo-v2.6-flash' };
   }
   return null;
 }

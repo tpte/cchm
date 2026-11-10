@@ -68,10 +68,11 @@ for line in open(sys.argv[1]):
 msgs=[r for r in recs if r.get("op")=="messages"][-100:]
 if msgs:
     ok=[r for r in msgs if r.get("status")==200]
-    fail=[r for r in msgs if r.get("status") not in (200,None) or r.get("error")]
+    upstream_fail=[r for r in msgs if (r.get("status") or 0) >= 500 or r.get("error")]
+    client4xx=[r for r in msgs if 400 <= (r.get("status") or 0) < 500]
     lat=[r["ms"] for r in ok if r.get("ms")]
     p50=int(statistics.median(lat)) if lat else 0
-    print(f"  ℹ️  近 {len(msgs)} 筆請求：成功 {len(ok)}（{len(ok)*100//max(1,len(msgs))}%），p50={p50}ms，失敗/換道 {len(fail)}")
+    print(f"  ℹ️  近 {len(msgs)} 筆：成功 {len(ok)}（{len(ok)*100//max(1,len(msgs))}%），p50={p50}ms，上游失敗 {len(upstream_fail)}，請求錯誤(4xx/測試) {len(client4xx)}")
     fo=[r for r in recs if r.get("op")=="failover"]
     if fo: print(f"  ℹ️  換道紀錄 {len(fo)} 筆（最後：{fo[-1].get('from')}→{fo[-1].get('to')} {fo[-1].get('status') or fo[-1].get('error','')}）")
 PY

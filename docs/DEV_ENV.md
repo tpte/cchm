@@ -54,6 +54,9 @@ journalctl --user -u cchm-router.service -n 50
 | `CCHM_TOKENIZER_MODEL` | `mimo-v2.6-flash-outlaw` | count_tokens 用的 tokenizer |
 | `CCHM_LOG_DIR` | `~/cchm/.exp/logs` | 用量日誌目錄 |
 | `CCHM_BRAIN_MODEL` | `claude-sonnet-4-5` | 主對話模型名（可改真模型名） |
+| `CCHM_BRAIN_LANE` | `outlaw` | `fast` = 調度腦改走 openrouter 的 mimo-pro-ultraspeed（實測快約 1.8 倍，但有審核） |
+| `CCHM_BRAIN_FAST_MODEL` | `xiaomi/mimo-v2.6-pro-ultraspeed` | fast 車道的腦模型 |
+| `CCHM_BRAIN_FALLBACK` | `xiaomi/mimo-v2.6-flash` | wildwest 掛掉／擋住時的腦備援（openrouter） |
 | `CCHM_DEFAULT_ROUTE` | `openrouter` | 認不出的 model 走哪家 |
 | `CCHM_HEAVY_ROUTE` | `wildwest` | `hh-` 前綴走哪家 |
 

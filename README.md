@@ -53,6 +53,7 @@ scripts/cchm-doctor      # router／權杖／三車道延遲／count_tokens／�
 | `CCHM_MAX_OUTPUT` | `64000` | max output tokens |
 | `CCHM_FAILOVER_CODES` | `403,429,500,502,503,504,529` | 這些狀態碼自動換道重試 |
 | `CCHM_REQUIRE_TOKEN` | `cchm-local` | 本地權杖（空字串＝關閉檢查） |
+| `CCHM_BRAIN_LANE` | `outlaw` | `fast` = 調度腦改走 openrouter 的 mimo-pro-ultraspeed（快約 1.8 倍，但有審核） |
 
 路由與別名在 `src/router.mjs` 的 `CLAUDE_ALIAS` / `ALIAS_MAP` / `routeFor`，加新模型只改那裡。
 

@@ -27,6 +27,8 @@
 | keep-alive 連線池 | 效率 | 省 TLS 握手 |
 | 用量日誌 | 效率 | `usage.jsonl` 每筆一行：model/upstream/status/ms/bytes/retry/failover |
 | context 視窗 | 效率 | 524288 → **200000**；設太大會讓 Claude Code 不自動壓縮，每回合重送肥 context |
+| 調度腦雙車道 | 效率＋繞審查 | 預設 outlaw（wildwest，p50 3.1s、無審核）；`CCHM_BRAIN_LANE=fast` 改走 openrouter `mimo-pro-ultraspeed`（實測 1.9s，快 1.8 倍但有審核）；wildwest 失敗自動 fallback 到 openrouter mimo |
+| outlaw 真名路由修正 | 架構 | 直接指定 `deepseek-v4.1-flash-1017-outlaw` 原本會被誤送 openrouter（實測失敗），已改成含 outlaw 一律走 wildwest |
 | systemd user unit | 架構 | `cchm-router.service`（Restart=always、linger=yes），掛掉 2 秒後自己回來，開機自動起 |
 | 自檢腳本 | 質量 | `scripts/cchm-doctor`：router／權杖／三車道延遲／count_tokens／近 100 筆成功率 |
 | verifier 角色 | 質量 | `agents/verifier.md`：只讀審查者，逐條對驗收條件、回缺陷清單、不改檔 |
@@ -48,7 +50,7 @@
 
 1. **拒絕自動換道（串流版）**：目前只在 HTTP 錯誤層換道。SSE 已吐出的內容無法回捲，所以「內容級」refusal 偵測**刻意沒做**——做了只會讓使用者看到重複內容。真正可行的是「派出前升級」：偵測 prompt 含高風險主題時自動改走 outlaw 車道（`CCHM_AUTO_ESCALATE`）。要做的話先設計誤判成本。
 2. **用量成本換算**：`usage.jsonl` 目前只有 bytes 與延遲，沒有 token 數與金額。下一步在 router 解析 SSE 最後的 `message_delta.usage`，累計每日成本。
-3. **第二家無審核上游**：現在 wildwest 是唯一 outlaw 來源，它掛了就只剩 openrouter。要找第二家並在 `UPSTREAMS` 加一條（也需要模型名對照）。
+3. **第二家無審核上游**：現在 wildwest 是唯一 outlaw 來源。已補「腦的備援」（wildwest 掛 → openrouter 的 `xiaomi/mimo-v2.6-flash`），但那是審核版，不算第二家無審核供應商。要找第二家並在 `UPSTREAMS` 加一條（需要模型名對照）。
 4. **prompt cache**：Anthropic 格式的 `cache_control` 目前原樣直通，但沒驗證上游是否真的吃到。值得實測一次（同一段長 system prompt 連送兩次，看延遲與計費差異）。
 5. **`bin/cchm-exp` 沙箱化**：目前只是另一支啟動器，沒有真的隔離。理想的自我改造流程是「改 router → 沙箱跑 doctor → 通過才 promote」，promote 那步已經有自動 push，但缺沙箱驗證。
 
