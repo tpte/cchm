@@ -16,6 +16,10 @@ BRAIN="${CCHM_BRAIN_MODEL:-mimo-v2.6-flash-outlaw}"          # 調度腦（WildW
 WORKER="${CCHM_WORKER_MODEL:-deepseek/deepseek-v4.1-flash-1017:nitro}" # 工作手（OpenRouter）
 
 if [ -z "${WILDWEST_API_KEY:-}" ] || [ -z "${OPENROUTER_API_KEY:-}" ]; then
+  SECRETS="${HERMES_SECRETS_FILE:-$HOME/.hermes/.secrets/wildwest.env}"
+  if [ -r "$SECRETS" ]; then
+    WILDWEST_API_KEY="${WILDWEST_API_KEY:-$(grep -m1 '^WILDWEST_API_KEY=' "$SECRETS" | cut -d= -f2- | tr -d '"\r')}"
+  fi
   if [ -r "$ENVF" ]; then
     WILDWEST_API_KEY="${WILDWEST_API_KEY:-$(grep -m1 '^WILDWEST_API_KEY=' "$ENVF" | cut -d= -f2- | tr -d '"\r')}"
     OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-$(grep -m1 '^OPENROUTER_API_KEY=' "$ENVF" | cut -d= -f2- | tr -d '"\r')}"
@@ -49,6 +53,13 @@ CLAUDE_BIN="${CCHM_CLAUDE_BIN:-$HOME/.local/share/mise/shims/claude}"
 [ -n "$CLAUDE_BIN" ] || { echo "cchm: 找不到 claude" >&2; exit 1; }
 
 # 主模型一律釘死成調度腦；subagent 用工作手。skill/agent 定義會再覆寫細節。
+DISPATCH_PROMPT="${CCHM_DISPATCH_PROMPT:-$(cat "$HOME/cchm/agents/dispatcher.md" 2>/dev/null | tail -n +7 || true)}"
+ARGS=()
+for a in "$@"; do ARGS+=("$a"); done
+if [ -s "$HOME/cchm/agents/dispatcher.md" ]; then
+  set -- --append-system-prompt "$(sed '1,/^---$/d;/^---$/,$d' "$HOME/cchm/agents/dispatcher.md")" "${ARGS[@]}"
+fi
+
 exec "$CLAUDE_BIN" \
   --model "$BRAIN" \
   --settings "$HOME/cchm/settings/claude-settings.json" \
