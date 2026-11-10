@@ -1,59 +1,75 @@
 #!/usr/bin/env bash
 # cchm — Claude Code Hacking Mode 啟動器
 #
-# 架構：claude → 本機 router (src/router.mjs) → 依 model 分流
-#   mimo-v2.6-flash-outlaw        (WildWest)   調度腦：只拆任務、派工
-#   deepseek-v4.1-flash-1017:nitro (OpenRouter) 工作手：實際寫碼，subagent 全用它
+# 架構：claude → 本機 router (src/router.mjs, 127.0.0.1:8791) → 依 model 分流
+#   主對話（brain）  → mimo-v2.6-flash-outlaw        (WildWest)    只拆任務、派工
+#   subagent（worker）→ deepseek-v4.1-flash-1017:nitro (OpenRouter) 實際寫碼
+#   hh- 前綴（heavy）→ 同名模型的 outlaw 版           (WildWest)    輸出短、動作導向
 #
-# 路由由 router 判斷，所以這裡只要把 ANTHROPIC_BASE_URL 指到本機即可。
+# 模型名用 Claude Code 認得的官方名（claude-sonnet/haiku-4-5），由 router 翻成真模型，
+# 這樣 Claude Code 對 context window / thinking 的假設才正確，不會一直警告不認得模型。
 set -euo pipefail
 
 PORT="${CCHM_PORT:-8791}"
 ENVF="${HERMES_ENV_FILE:-$HOME/.hermes/.env}"
 
-# 先決定主模型（給 router 的 log 也好看）
-BRAIN="${CCHM_BRAIN_MODEL:-mimo-v2.6-flash-outlaw}"          # 調度腦（WildWest）
-WORKER="${CCHM_WORKER_MODEL:-deepseek/deepseek-v4.1-flash-1017:nitro}" # 工作手（OpenRouter）
+# 主模型（Claude Code 看到的名字；router 會換成 mimo）。想直接釘真模型名也可以，router 都認。
+BRAIN="${CCHM_BRAIN_MODEL:-claude-sonnet-4-5}"
+WORKER="${CCHM_WORKER_MODEL:-claude-haiku-4-5}"   # 只給 log／提示用，實際由 settings 決定
 
 if [ -z "${WILDWEST_API_KEY:-}" ] || [ -z "${OPENROUTER_API_KEY:-}" ]; then
   SECRETS="${HERMES_SECRETS_FILE:-$HOME/.hermes/.secrets/wildwest.env}"
   if [ -r "$SECRETS" ]; then
-    WILDWEST_API_KEY="${WILDWEST_API_KEY:-$(grep -m1 '^WILDWEST_API_KEY=' "$SECRETS" | cut -d= -f2- | tr -d '"\r')}"
+    WILDWEST_API_KEY="${WILDWEST_API_KEY:-$(grep -m1 '^WILDWEST_API_KEY=' "$SECRETS" | cut -d= -f2- | tr -d '"' | tr -d '\015')}"
   fi
   if [ -r "$ENVF" ]; then
-    WILDWEST_API_KEY="${WILDWEST_API_KEY:-$(grep -m1 '^WILDWEST_API_KEY=' "$ENVF" | cut -d= -f2- | tr -d '"\r')}"
-    OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-$(grep -m1 '^OPENROUTER_API_KEY=' "$ENVF" | cut -d= -f2- | tr -d '"\r')}"
+    WILDWEST_API_KEY="${WILDWEST_API_KEY:-$(grep -m1 '^WILDWEST_API_KEY=' "$ENVF" | cut -d= -f2- | tr -d '"' | tr -d '\015')}"
+    OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-$(grep -m1 '^OPENROUTER_API_KEY=' "$ENVF" | cut -d= -f2- | tr -d '"' | tr -d '\015')}"
   fi
 fi
 export WILDWEST_API_KEY OPENROUTER_API_KEY
 
-# 上下文視窗：deepseek-v4.1-flash-1017 實測可吃到 786k；MiMo 保守抓 WildWest 常見 256k
-WINDOW="${CCHM_CONTEXT:-524288}"
+# 上下文視窗：設成上游實際吃得下的量。設太大（>200k）Claude Code 就不會自動壓縮，
+# 每回合把整段肥 context 重送一次，延遲與成本都爆——這是「便宜腦」失效的主因。
+WINDOW="${CCHM_CONTEXT:-200000}"
 export CLAUDE_CODE_MAX_CONTEXT_TOKENS="$WINDOW"
 export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$WINDOW"
 
-# DeepSeek 是 reasoning 模型，thinking 吃預算，同 ccun 教訓設大一點避免被截斷
+# DeepSeek 是 reasoning 模型，thinking 吃預算，設大一點避免被截斷
 export CLAUDE_CODE_MAX_OUTPUT_TOKENS="${CCHM_MAX_OUTPUT:-64000}"
 export API_TIMEOUT_MS="${CCHM_API_TIMEOUT_MS:-1200000}"
 export BASH_DEFAULT_TIMEOUT_MS="${CCHM_BASH_TIMEOUT_MS:-300000}"
 
-# 沒在跑就先把 router 拉起來（port 被占就沿用既有 router）
+# router：優先叫 systemd user unit（掛了會自動重啟），沒有才自己 spawn
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 ROUTER="$SCRIPT_DIR/../src/router.mjs"
 [ -f "$ROUTER" ] || ROUTER="$HOME/cchm/src/router.mjs"
-if ! curl -s -o /dev/null "http://127.0.0.1:$PORT/healthz"; then
-  node "$ROUTER" &
-  ROUTER_PID=$!
-  trap 'kill $ROUTER_PID 2>/dev/null' EXIT
-  sleep 0.4
+if ! curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$PORT/healthz"; then
+  if systemctl --user start cchm-router.service 2>/dev/null; then
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      curl -s -o /dev/null --max-time 1 "http://127.0.0.1:$PORT/healthz" && break
+      sleep 0.2
+    done
+  else
+    node "$ROUTER" &
+    ROUTER_PID=$!
+    trap 'kill $ROUTER_PID 2>/dev/null' EXIT
+    sleep 0.4
+  fi
 fi
+
+# 起不來就講清楚卡在哪，不要讓 claude 帶著壞掉的 base URL 進去
+HEALTH="$(curl -s --max-time 2 "http://127.0.0.1:$PORT/healthz" || true)"
+case "$HEALTH" in
+  *'"ok":true'*) ;;
+  *) echo "cchm: router 沒起來（$PORT）。查：systemctl --user status cchm-router.service" >&2; exit 1 ;;
+esac
 
 CLAUDE_BIN="${CCHM_CLAUDE_BIN:-$HOME/.local/share/mise/shims/claude}"
 [ -x "$CLAUDE_BIN" ] || CLAUDE_BIN="$(command -v claude || true)"
 [ -n "$CLAUDE_BIN" ] || { echo "cchm: 找不到 claude" >&2; exit 1; }
 
-# 主模型一律釘死成調度腦；subagent 用工作手。skill/agent 定義會再覆寫細節。
-DISPATCH_PROMPT="${CCHM_DISPATCH_PROMPT:-$(cat "$HOME/cchm/agents/dispatcher.md" 2>/dev/null | tail -n +7 || true)}"
+# 把 dispatcher 的角色提示（去掉 YAML frontmatter）灌進主對話
 ARGS=()
 for a in "$@"; do ARGS+=("$a"); done
 if [ -s "$HOME/cchm/agents/dispatcher.md" ]; then

@@ -1,16 +1,17 @@
 {
-  "_comment": "cchm 專用：base URL 指到本機 router，由 router 依 model 分流。由 bin/cchm 以 --settings 傳入。",
+  "_comment": "cchm 專用：base URL 指到本機 router，由 router 依 model 分流。由 bin/cchm 以 --settings 傳入。模型名一律用 Claude Code 認得的官方名，router 再翻成真模型（mimo / 1017-nitro），這樣 Claude Code 對 context window 與 thinking 的假設才正確。",
   "env": {
     "ANTHROPIC_BASE_URL": "http://127.0.0.1:8791",
     "ANTHROPIC_API_KEY": "",
     "ANTHROPIC_AUTH_TOKEN": "cchm-local",
-    "ANTHROPIC_MODEL": "mimo-v2.6-flash-outlaw",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "mimo-v2.6-flash-outlaw",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "mimo-v2.6-flash-outlaw",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek/deepseek-v4.1-flash-1017:nitro",
-    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek/deepseek-v4.1-flash-1017:nitro",
+    "ANTHROPIC_MODEL": "claude-sonnet-4-5",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-sonnet-4-5",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4-5",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4-5",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "claude-haiku-4-5",
     "CLAUDECODE": "",
     "DISABLE_TELEMETRY": "1",
+    "DISABLE_ERROR_REPORTING": "1",
     "MAX_THINKING_TOKENS": "14000",
     "BASH_DEFAULT_TIMEOUT_MS": "600000",
     "BASH_MAX_TIMEOUT_MS": "1800000",
@@ -24,21 +25,33 @@
       "Bash(git diff:*)",
       "Bash(git log:*)"
     ],
+    "deny": [
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(rm -rf /)",
+      "Bash(rm -rf ~)",
+      "Bash(rm -rf /home/*)",
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(~/.ssh/id_*)",
+      "Read(~/.hermes/.env)"
+    ],
     "defaultMode": "bypassPermissions"
   },
   "skipDangerousModePermissionPrompt": true,
-  "model": "mimo-v2.6-flash-outlaw",
+  "model": "claude-sonnet-4-5",
   "modelPicker": {
     "options": [
       {
-        "model": "mimo-v2.6-flash-outlaw",
-        "label": "MiMo 2.6 Flash（調度腦）",
-        "description": "主對話模型，只負責拆解與派工"
+        "model": "claude-sonnet-4-5",
+        "label": "調度腦（MiMo 2.6 Flash / wildwest）",
+        "description": "主對話：只拆解、派工、驗收，不自己寫碼"
       },
       {
-        "model": "deepseek/deepseek-v4.1-flash-1017:nitro",
-        "label": "DeepSeek 1017 Nitro（工作手）",
-        "description": "subagent / 實際寫碼都在這個"
+        "model": "claude-haiku-4-5",
+        "label": "工作手（DeepSeek 1017 nitro / openrouter）",
+        "description": "subagent：實際寫碼、跑測試、除錯"
       }
     ],
     "replaceBuiltInOptions": true
