@@ -13,7 +13,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const VERSION = '0.3.0';
+const VERSION = '0.3.1';
 const PORT = Number(process.env.CCHM_PORT || 8791);
 const STARTED = Date.now();
 
@@ -125,8 +125,42 @@ function estimateTokens(body) {
   return Math.max(1, Math.ceil(chars / 2.5));
 }
 
+/* ── 併發閘門與重試（2026-11-11 實測）─────────────────
+   Silk 帳號上限：同時只能有 8 個請求在跑，第 9 個回
+   429 rate_limit_error "This account already has 8 requests running"，
+   而且不帶 Retry-After。v0.3 拿掉 failover 後 429 會原樣丟回 Claude Code，
+   使用者看到的就是滿畫面的 API Error。這裡補兩件事：排隊節流＋有界重試。 */
+const MAX_CONCURRENT = Number(process.env.CCHM_MAX_CONCURRENT || 6); // 留 2 個餘裕給自檢／bench
+const MAX_RETRY = Number(process.env.CCHM_MAX_RETRY || 4);
+const RETRY_CODES = new Set([408, 409, 429, 500, 502, 503, 504, 524, 529]);
+let active = 0;
+const waiting = [];
+function acquire() {
+  if (active < MAX_CONCURRENT) { active++; return Promise.resolve(); }
+  return new Promise((resolve) => waiting.push(resolve));
+}
+function release() {
+  const next = waiting.shift();
+  if (next) return next();          // 槽直接交接給排隊者，active 不變
+  if (active > 0) active--;
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/* ── 單次上游請求（先拿到 status 再決定直通或重試，SSE 不緩衝）── */
+function once(body, headers, req) {
+  return new Promise((resolve) => {
+    const r = https.request({
+      hostname: UPSTREAM.host, port: UPSTREAM.port, path: req.url,
+      method: req.method, headers, agent,
+    }, (ur) => resolve({ ur }));
+    r.on('error', (err) => resolve({ err }));
+    if (body.length) r.write(body);
+    r.end();
+  });
+}
+
 /* ── 轉發（單一上游，SSE 直通）───────────────────────── */
-function forward(rawBody, req, res, t0) {
+async function forward(rawBody, req, res, t0) {
   let parsed = {};
   try { parsed = JSON.parse(rawBody.toString('utf8') || '{}'); } catch {}
   const model = normalizeModel(parsed.model);
@@ -134,10 +168,36 @@ function forward(rawBody, req, res, t0) {
   const headers = cleanHeaders(req);
   headers['content-length'] = Buffer.byteLength(body);
 
-  const r = https.request({
-    hostname: UPSTREAM.host, port: UPSTREAM.port, path: req.url,
-    method: req.method, headers, agent,
-  }, (ur) => {
+  await acquire();
+  let released = false;
+  const done = () => { if (!released) { released = true; release(); } };
+  res.on('close', done);
+
+  for (let attempt = 0; ; attempt++) {
+    if (res.writableEnded || res.destroyed) { done(); return; }
+    const { ur, err } = await once(body, headers, req);
+    const retriable = !!err || (ur && RETRY_CODES.has(ur.statusCode));
+
+    if (retriable && attempt < MAX_RETRY) {
+      const base = err ? 400 : 1000;
+      const wait = Math.min(10_000, base * 2 ** attempt) + Math.floor(Math.random() * 300);
+      console.log(`[cchm] 重試 ${attempt + 1}/${MAX_RETRY}（${err ? err.message : 'HTTP ' + ur.statusCode}）等 ${wait}ms model=${model} active=${active} queue=${waiting.length}`);
+      logUsage({ ts: new Date().toISOString(), op: 'retry', model, attempt: attempt + 1,
+                 status: ur?.statusCode, error: err?.message, wait_ms: wait, active, queued: waiting.length });
+      if (ur) ur.resume();          // 丟棄這次的錯誤 body，不要轉給 client
+      await sleep(wait);
+      continue;
+    }
+
+    if (err) {
+      console.error('[cchm] silk 失敗:', err.message);
+      logUsage({ ts: new Date().toISOString(), op: 'messages', model, error: err.message, ms: Date.now() - t0 });
+      if (!res.headersSent) res.writeHead(502, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: `cchm: silk ${err.message}` } }));
+      done();
+      return;
+    }
+
     res.writeHead(ur.statusCode, ur.headers);
     let bytes = 0, tail = '';
     ur.on('data', (c) => {
@@ -154,22 +214,16 @@ function forward(rawBody, req, res, t0) {
         ? Number(((inTok / 1e6) * bill[0] + (cacheTok / 1e6) * bill[2] + (outTok / 1e6) * bill[1]).toFixed(6))
         : null;
       console.log(`[cchm] ${req.method} ${req.url} model=${model} ${ur.statusCode} ${bytes}B ${ms}ms` +
+        (attempt ? ` retries=${attempt}` : '') +
         (inTok != null ? ` in=${inTok} out=${outTok} cache=${cacheTok}` : '') + (cost != null ? ` $${cost}` : ''));
       logUsage({ ts: new Date().toISOString(), op: 'messages', model, status: ur.statusCode,
-                 bytes, ms, in_tokens: inTok, out_tokens: outTok, cache_tokens: cacheTok, cost_usd: cost });
+                 bytes, ms, retries: attempt, in_tokens: inTok, out_tokens: outTok, cache_tokens: cacheTok, cost_usd: cost });
+      done();
     });
+    ur.on('error', () => done());
     ur.pipe(res);
-  });
-
-  r.on('error', (err) => {
-    console.error('[cchm] silk 失敗:', err.message);
-    logUsage({ ts: new Date().toISOString(), op: 'messages', model, error: err.message, ms: Date.now() - t0 });
-    if (!res.headersSent) res.writeHead(502, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: `cchm: silk ${err.message}` } }));
-  });
-
-  if (body.length) r.write(body);
-  r.end();
+    return;
+  }
 }
 
 /* ── server ──────────────────────────────────────────── */
@@ -183,6 +237,7 @@ const server = http.createServer((req, res) => {
       ok: true, version: VERSION, upstream: UPSTREAM.host,
       uptime_s: Math.round((Date.now() - STARTED) / 1000),
       brain: BRAIN, worker: WORKER, auth: REQUIRED_TOKEN ? 'token' : 'open',
+      inflight: active, queued: waiting.length, max_concurrent: MAX_CONCURRENT,
     }));
   }
 

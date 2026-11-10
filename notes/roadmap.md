@@ -21,7 +21,7 @@
 | 未知 claude 名的保險 | 繞審查＋帳單 | 任何沒對到的 `claude-*` 一律導回 mimo，避免原樣打到 OpenRouter 的真 Claude |
 | count_tokens 修正 | 架構 | OpenRouter 沒這端點（實測 404）→ 一律走 wildwest tokenizer，失敗則本地估算 |
 | `/v1/models` 本地化 | 架構 | 回自家三條車道，不直通上游 |
-| 換道 failover | 繞審查 | `403,429,5xx` 自動換到另一家重試一次（403＝政策封鎖 → 換 outlaw 車道）。已用 `CCHM_FAILOVER_CODES=400` 演練驗證 |
+| 換道 failover | 繞審查 | ~~`403,429,5xx` 自動換到另一家重試一次（403＝政策封鎖 → 換 outlaw 車道）~~｜**已失效**：v0.3（D014）改單一上游，換道機制移除；2026-11-11 改成車內「併發節流＋退避重試」（D016） |
 | 指紋清洗 | 繞審查 | 只放行 content-type/accept/anthropic-version/anthropic-beta，其餘 header（user-agent、x-stainless-*、x-app…）一律不轉發，UA 統一 `cchm/0.2` |
 | 本地權杖 | 架構 | 沒帶 token 回 401，避免本機任何程式白嫖金鑰 |
 | keep-alive 連線池 | 效率 | 省 TLS 握手 |

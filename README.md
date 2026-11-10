@@ -48,21 +48,22 @@ scripts/bench-lanes.py   # 同一組任務換不同工作手模型，比通過�
 | 變數 | 預設 | 用途 |
 |---|---|---|
 | `CCHM_PORT` | `8791` | router 埠 |
-| `CCHM_BRAIN_MODEL` | `claude-sonnet-4-5` | 調度腦（router 翻成 mimo） |
-| `CCHM_WORKER_MODEL` | `claude-haiku-4-5` | 工作手（router 翻成 1017 nitro） |
+| `CCHM_BRAIN_MODEL` | `deepseek-v4.1-flash-1017-uncensored` | 主模型（claude-opus／sonnet 都翻成這顆） |
+| `CCHM_WORKER_MODEL` | 同 BRAIN | 工作手（v0.3 預設一層，與主模型同顆） |
+| `CCHM_PRO_MODEL` | `kimi-k3.1-pro-uncensored` | 硬任務才切的高階模型 |
+| `CCHM_MAX_CONCURRENT` | `6` | 同時送上游的上限。**Silk 帳號硬限 8 個同時請求**，超過就 429 |
+| `CCHM_MAX_RETRY` | `4` | 429／5xx／連線錯誤的退避重試次數（1s→8s＋jitter） |
 | `CCHM_CONTEXT` | `200000` | context window tokens（**別調高**，會讓 Claude Code 不自動壓縮） |
 | `CCHM_MAX_OUTPUT` | `64000` | max output tokens |
-| `CCHM_FAILOVER_CODES` | `403,429,500,502,503,504,529` | 這些狀態碼自動換道重試 |
 | `CCHM_REQUIRE_TOKEN` | `cchm-local` | 本地權杖（空字串＝關閉檢查） |
-| `CCHM_BRAIN_LANE` | `outlaw` | `fast` = 調度腦改走 openrouter 的 mimo-v2.6-flash（0.83s、$0.14/M，快又便宜，但有審查） |
 
-路由與別名在 `src/router.mjs` 的 `CLAUDE_ALIAS` / `ALIAS_MAP` / `routeFor`，加新模型只改那裡。
+路由與別名在 `src/router.mjs` 的 `CLAUDE_ALIAS` / `normalizeModel`，加新模型只改那裡。
 
 ## 架構細節
 
 - Router 是零依賴 Node proxy（只用內建 http/https），SSE 直通不緩衝，keep-alive 連線池。
-- **本地端點**：`/healthz`、`/v1/models`（自家的車道清單，不直通上游）、`/v1/messages/count_tokens`（OpenRouter 沒有這端點，一律走 wildwest tokenizer）。
-- **自動換道**：上游回 403／429／5xx 時，工作手會自動改用 wildwest 的 outlaw 版重試一次（403 = 政策封鎖時這條等於繞審查的備援）。
+- **本地端點**：`/healthz`（含 `inflight`／`queued`／`max_concurrent`，可即時看有沒有排隊）、`/v1/models`（自家車道清單）、`/v1/models/…/count_tokens`（本地估算 `ceil(chars/2.5)`，回 `estimated:true`）。
+- **併發節流＋有界重試**：Silk 帳號**同時上限 8 個請求**，第 9 個回 429 `This account already has 8 requests running`（不帶 Retry-After）。router 自己排在 6 個以內，429／5xx／連線錯誤退避重試 4 次；錯誤 body 丟棄不轉給 client，所以 Claude Code 不再看到滿畫面 API Error。
 - **指紋清洗**：只轉發 content-type／accept／anthropic-version／anthropic-beta，其餘 client header 一律不送，UA 統一 `cchm/0.2`。
 - **用量日誌**：`~/cchm/.exp/logs/usage.jsonl`，每筆一行（model／upstream／status／ms／bytes／retry）。
 - 調度腦提示在 `agents/dispatcher.md`，啟動器用 `--append-system-prompt` 灌進主對話。

@@ -172,3 +172,27 @@
   並行只適合用來縮短「整批」牆鐘，不適合拿時間當結論。
 - **同向結論不變**：一層永遠最快，雙層沒有品質收益。
 - **狀態**：有效
+
+## D016 429 的真正來源是 Silk 帳號併發上限 8；router 補排隊節流與有界重試
+
+- **問題**：使用者在 Claude Code（cchm）一直看到 API Error。
+- **根因（實測）**：直接打 `api.silkcompute.com` 取得 429 body：
+  `{"type":"error","error":{"type":"rate_limit_error","message":"This account already has 8 requests running. Try again when one finishes."}}`
+  即**帳號同時只能有 8 個請求在跑**，第 9 個就 429，且回應**不帶 Retry-After**。
+  v0.3（D014）拿掉 failover 之後，router 既沒有節流也沒有重試，429 原樣 writeHead 給 client，
+  Claude Code 就顯示成 API Error。
+- **量測**（`.exp/logs/usage.jsonl` 3,264 筆）：非 200 共 542 筆（16.6%）；
+  11-10 18 時那小時 1,018 請求有 486 失敗（48%），最密集的 18:03 該分鐘 58 請求 41 個 429（71%）；
+  另有 524×13（上游 125 秒超時）、503×11、400×15、`read ECONNRESET`×14。
+- **改動**（`src/router.mjs` v0.3.1）：
+  - semaphore 併發閘門，`CCHM_MAX_CONCURRENT` 預設 **6**（留 2 個裕度給自檢／bench），超過就排隊而不是丟 429；client 斷線會釋放槽
+  - `RETRY_CODES = 408/409/429/500/502/503/504/524/529` ＋ 連線錯誤，最多重試 **4** 次，指數退避 1s→8s ＋ jitter（連線錯誤 0.4s 起）；錯誤 body 丟棄不轉給 client
+  - 先取得上游 status 才決定「直通或重試」，SSE 仍原樣直通不緩衝
+  - `/healthz` 增 `inflight`／`queued`／`max_concurrent`，可即時看有沒有排隊
+- **驗證**：
+  - 經 router 併發 12 → **12/12 200，零 429**（修前同樣情境會整批 429）
+  - 另一實例 `CCHM_MAX_CONCURRENT=20` 併發 16 → 觸發 **14 次 429 全部被重試吸收**，最終 16/16 200
+- **代價**：同時超過 6 個請求會排隊，單發延遲被拉長（12 併發時最慢 117 秒）。用延遲換「不再跳錯誤」。
+- **未解**：Silk 沒有官方併發文件、也沒有 Retry-After，上限 8 是行為實測；要更快只能升方案或分流到第二家（等同恢復 D014 推翻的多上游）。
+- **狀態**：有效
+
