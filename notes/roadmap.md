@@ -27,7 +27,8 @@
 | keep-alive 連線池 | 效率 | 省 TLS 握手 |
 | 用量日誌 | 效率 | `usage.jsonl` 每筆一行：model/upstream/status/ms/bytes/retry/failover |
 | context 視窗 | 效率 | 524288 → **200000**；設太大會讓 Claude Code 不自動壓縮，每回合重送肥 context |
-| 調度腦雙車道 | 效率＋繞審查 | 預設 outlaw（wildwest，p50 3.1s、無審核）；`CCHM_BRAIN_LANE=fast` 改走 openrouter `mimo-pro-ultraspeed`（實測 1.9s，快 1.8 倍但有審核）；wildwest 失敗自動 fallback 到 openrouter mimo |
+| 調度腦雙車道 | 效率＋繞審查 | 預設 outlaw（wildwest，p50 2.9s、無審核）；`CCHM_BRAIN_LANE=fast` 改走 openrouter `mimo-v2.6-flash`（0.83s、$0.14/M，但有審查且時拒時做）；wildwest 失敗自動 fallback 到同一顆 |
+| 車道實測與成本表 | 效率 | wildwest 11 顆全測：現用 mimo-outlaw 最快（2.9s）。同顆 mimo 走 openrouter 0.83s → **延遲差在通路不在模型**。ultraspeed（$4.35/$8.7）會明確拒絕繞限流請求且沒更快，已從 fast 車道移除 |
 | outlaw 真名路由修正 | 架構 | 直接指定 `deepseek-v4.1-flash-1017-outlaw` 原本會被誤送 openrouter（實測失敗），已改成含 outlaw 一律走 wildwest |
 | systemd user unit | 架構 | `cchm-router.service`（Restart=always、linger=yes），掛掉 2 秒後自己回來，開機自動起 |
 | 自檢腳本 | 質量 | `scripts/cchm-doctor`：router／權杖／三車道延遲／count_tokens／近 100 筆成功率 |

@@ -72,10 +72,11 @@ const ROUTE_RULES = [
 ];
 // 註：ROUTE_RULES 的比對已搬進 routeFor（需先解析 claude-* 別名），此處保留作為文件說明。
 
-// 調度腦：預設走 wildwest 的 outlaw 版（無審核，實測 p50 3.1s）；
-// 想要快就把 CCHM_BRAIN_LANE 設成 fast → 走 openrouter 的 mimo-pro-ultraspeed（實測 p50 1.2s，但有審核）
+// 調度腦：預設走 wildwest 的 outlaw 版（無審核，實測 p50 2.9s，已是無審核陣營最快）；
+// CCHM_BRAIN_LANE=fast → 走 openrouter 官方 mimo-flash（實測 0.83s、$0.14/M，快又便宜，但**有審查、實測會拒繞限流類請求**）
+// 實測 2026-11-10：ultraspeed 版 $4.35/$8.7、1.32s 且明確拒絕該類請求 → 沒有任何優勢，已移除
 const BRAIN_MODEL = process.env.CCHM_BRAIN_LANE === 'fast'
-  ? (process.env.CCHM_BRAIN_FAST_MODEL || 'xiaomi/mimo-v2.6-pro-ultraspeed')
+  ? (process.env.CCHM_BRAIN_FAST_MODEL || 'xiaomi/mimo-v2.6-flash')
   : 'mimo-v2.6-flash-outlaw';
 
 // Claude Code 只認自家模型名，遇到 mimo/deepseek 會警告 "doesn't recognize the model"，

@@ -53,7 +53,7 @@ scripts/cchm-doctor      # router／權杖／三車道延遲／count_tokens／�
 | `CCHM_MAX_OUTPUT` | `64000` | max output tokens |
 | `CCHM_FAILOVER_CODES` | `403,429,500,502,503,504,529` | 這些狀態碼自動換道重試 |
 | `CCHM_REQUIRE_TOKEN` | `cchm-local` | 本地權杖（空字串＝關閉檢查） |
-| `CCHM_BRAIN_LANE` | `outlaw` | `fast` = 調度腦改走 openrouter 的 mimo-pro-ultraspeed（快約 1.8 倍，但有審核） |
+| `CCHM_BRAIN_LANE` | `outlaw` | `fast` = 調度腦改走 openrouter 的 mimo-v2.6-flash（0.83s、$0.14/M，快又便宜，但有審查） |
 
 路由與別名在 `src/router.mjs` 的 `CLAUDE_ALIAS` / `ALIAS_MAP` / `routeFor`，加新模型只改那裡。
 
@@ -67,6 +67,18 @@ scripts/cchm-doctor      # router／權杖／三車道延遲／count_tokens／�
 - 調度腦提示在 `agents/dispatcher.md`，啟動器用 `--append-system-prompt` 灌進主對話。
 - 工作手與審查者 agent 定義在 `agents/`，裝到 `~/.claude/agents/cchm-*.md`。
 - 不影響原 `claude` / `ccun` / `ccds`——環境變數只在這個 process 內生效。
+
+## 成本與審查（2026-11-10 實測，每 1M token）
+
+| 車道 | 模型 | 輸入 | 輸出 | 首字 | 審查 |
+|---|---|---|---|---|---|
+| 調度腦（預設） | wildwest `mimo-v2.6-flash-outlaw` | $1.00 | $2.00 | 2.9s | 無審核，實測直接給腳本 |
+| 調度腦 `fast` | openrouter `xiaomi/mimo-v2.6-flash` | **$0.14** | **$0.28** | **0.83s** | 有審查，實測時拒時做（不穩） |
+| 工作手 | openrouter `deepseek-v4.1-flash-1017:nitro` | $0.006 | $0.50 | 0.5s | 有審查 |
+| ~~fast（已棄用）~~ | openrouter `xiaomi/mimo-v2.6-pro-ultraspeed` | $4.35 | $8.70 | 1.32s | 有審查，實測明確拒絕 |
+
+延遲差異主要來自**通路**不是模型：同一顆 mimo，wildwest 中轉 2.9s、openrouter 直連 0.83s。
+wildwest 11 顆模型實測，最快的仍是現用的 mimo-outlaw（2.9s），換無審核模型求快沒有空間。
 
 ## 實測（2026-11-10，本機串流首字）
 
