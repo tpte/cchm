@@ -62,6 +62,26 @@
   - 相容性：streaming／tools／thinking／8 並發皆通；count_tokens 不支援（本地估算）
 - router 現在會記每次請求的 in/out token 與換算成本（`usage.jsonl` 的 `in_tokens`/`out_tokens`/`cost_usd`）
 
+### 2026-11-10 第三輪：1017 vs GLM-5.3 跑分與 Claude Code 實測
+
+第三方跑分（來源：vals.ai 22 項共同基準、stet.sh、DeepSeek 官方 model card）：
+
+| 對比 | 結果 |
+|---|---|
+| 1017 vs GLM-5.3（旗艦） | GLM 在 16/22 項領先，Vals Index 53.51 vs 51.32（+2.19）；IOI 68.44 vs 40.28（+28）、Terminal-Bench 4.0 38.89 vs 19.70。DeepSeek 在 SkillsBench（69.8 vs 47.5）、ProgramBench、HLE（42.6 vs 42.0）領先 |
+| 1017 vs GLM-5.3-Flash | DeepSeek 品質略高（stet 50.5 vs 47.9，+2.6），GLM-Flash 快一倍（26.6 vs 49.3 分/任務）、成本 $0.45 vs $0.49 |
+| 價格（Silk） | 1017 $0.28/$1.00；GLM-5.3 $2.00/$4.00（貴 7 倍）；GLM-5.3-Flash $0.24/$1.00 |
+
+Claude Code 同一個任務實測（wordcount 腳本 + 自測）：
+
+| 主對話模型 | 牆鐘 | 請求數 | 結果 |
+|---|---|---|---|
+| deepseek-v4.1-flash-1017-uncensored | **31.9s** | 4 | 正確 |
+| glm-5.3-flash-uncensored | 73.1s | 6 | 正確（但慢一倍多，thinking 吃時間） |
+
+結論：GLM-5.3 跑分略高但貴 7 倍；GLM-5.3-Flash 首字快但跑完整任務反而慢。
+**調度腦選 1017**，需要最強推理時才切 GLM-5.3 旗艦。
+
 ## 待辦（依價值排序）
 
 0. **Silk 要不要當預設**（等使用者決定）：實測成本便宜 3.4 倍但速度沒贏（3.4s vs 2.9s），

@@ -99,6 +99,18 @@ subagent 走 OpenRouter nitro 是 $0.0040。整趟約 **$0.015**。
 Agent 相容性：Anthropic Messages 原生、streaming、tool calling、thinking blocks、8 並發都通；
 `count_tokens` 不支援（走本地估算）、沒有 web search 這類內建工具。
 
+## 選哪顆（跑分＋實測）
+
+| 對比 | 誰贏 | 差距 |
+|---|---|---|
+| 1017 vs GLM-5.3（旗艦） | GLM-5.3 綜合略高 | Vals Index 53.51 vs 51.32；IOI +28 分、Terminal-Bench 4.0 38.89 vs 19.70；但貴 7 倍（\$2/\$4 vs \$0.28/\$1） |
+| 1017 vs GLM-5.3-Flash | 1017 品質略高 | stet 50.5 vs 47.9；GLM-Flash 快一倍但 Claude Code 實測反而慢（73s vs 32s） |
+| 1017 vs mimo-2.6（現用） | 1017 明顯較強 | 1017 在 Terminal-Bench 4.0 42.3、HLE 42.6；mimo 屬小模型級 |
+
+**建議配置**：調度腦與工作手都用 Silk `deepseek-v4.1-flash-1017-uncensored`（$0.28/$1.00、無審核、tool calling 正常）；
+需要最強推理（複雜重構、長鏈推演）才切 `glm-5.3-uncensored`（$2/$4）或 `kimi-k3.1-pro-uncensored`（$5/$15）。
+GLM-5.3-Flash 只在「單次短問答」有速度優勢，agent 迴圈裡反而更慢。
+
 ## 無審核供應商比較（每 1M token，2026-11-10 查價）
 
 | 供應商 | 代表模型 | 輸入 | 輸出 | 格式 | 備註 |
