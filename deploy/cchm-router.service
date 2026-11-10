@@ -10,6 +10,8 @@ ExecStart=/home/alan/.local/share/mise/shims/node /home/alan/cchm/src/router.mjs
 WorkingDirectory=/home/alan/cchm
 Environment=HOME=/home/alan
 Environment=NODE_ENV=production
+# 全 Silk 模式：腦與手都走 api.silkcompute.com（無審核、單一供應商）；WildWest 當自動 fallback
+Environment=CCHM_BRAIN_LANE=silk
 Restart=always
 RestartSec=2
 StandardOutput=append:/home/alan/cchm/.exp/logs/router.log

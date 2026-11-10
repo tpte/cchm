@@ -16,8 +16,10 @@ claude（Claude Code CLI）
 ## 怎麼跑
 
 ```bash
-cchm                      # 進一個專案目錄後執行；會自動確認 router 在跑，再 exec claude
-scripts/cchm-doctor       # 一鍵自檢：router、權杖、三車道延遲、count_tokens、用量統計
+cchm                       # 進一個專案目錄後執行；會自動確認 router 在跑，再 exec claude
+scripts/cchm-doctor        # 一鍵自檢：router、權杖、三車道延遲、count_tokens、用量統計
+scripts/bench-lanes.py     # A/B 比較「主對話固定 + 工作手換模型」的通過率、牆鐘、成本
+                           #   --only A,B1  --tasks T1,T3；結果寫 .exp/logs/bench-*.json
 ```
 
 ## 怎麼改

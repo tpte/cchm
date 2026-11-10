@@ -36,10 +36,11 @@ systemctl --user daemon-reload && systemctl --user enable --now cchm-router.serv
 - `WILDWEST_API_KEY` 環境變數，或 `$HOME/.hermes/.secrets/wildwest.env`
 - `OPENROUTER_API_KEY` 環境變數，或 `$HOME/.hermes/.env`
 
-## 自檢
+## 自檢與 A/B 比較
 
 ```bash
 scripts/cchm-doctor      # router／權杖／三車道延遲／count_tokens／近 100 筆成功率
+scripts/bench-lanes.py   # 同一組任務換不同工作手模型，比通過率／牆鐘／成本（客觀驗收：pytest、JSON 比對）
 ```
 
 ## 調整
@@ -107,9 +108,18 @@ Agent 相容性：Anthropic Messages 原生、streaming、tool calling、thinkin
 | 1017 vs GLM-5.3-Flash | 1017 品質略高 | stet 50.5 vs 47.9；GLM-Flash 快一倍但 Claude Code 實測反而慢（73s vs 32s） |
 | 1017 vs mimo-2.6（現用） | 1017 明顯較強 | 1017 在 Terminal-Bench 4.0 42.3、HLE 42.6；mimo 屬小模型級 |
 
-**建議配置**：調度腦與工作手都用 Silk `deepseek-v4.1-flash-1017-uncensored`（$0.28/$1.00、無審核、tool calling 正常）；
-需要最強推理（複雜重構、長鏈推演）才切 `glm-5.3-uncensored`（$2/$4）或 `kimi-k3.1-pro-uncensored`（$5/$15）。
-GLM-5.3-Flash 只在「單次短問答」有速度優勢，agent 迴圈裡反而更慢。
+**目前配置（2026-11-10 定案）**：腦與手都用 Silk `deepseek-v4.1-flash-1017-uncensored`，
+WildWest 只當自動 fallback。A/B 實測（3 任務，全部強制委派給 worker）：
+
+| 配置 | 通過 | 牆鐘 | 成本 |
+|---|---|---|---|
+| 全 Silk 1017 | 3/3 | **110.6s** | $0.0238 |
+| 手換 OpenRouter glm-5.3 | 3/3 | 164.5s | $0.0200 |
+| 手換 OpenRouter gpt-5.6-luna | 3/3 | 149.1s | $0.0212 |
+
+品質沒差、速度差 35–49%、成本只差 10–16%，而 OpenRouter 的高階模型在工作手位置會被審查擋
+（敏感題 3/3 拒絕；OpenRouter 上唯一 uncensored 是 24B 的 dolphin，不夠力）。所以維持單一供應商。
+需要最強推理時再手動切 `glm-5.3-uncensored`（$2/$4）或 `kimi-k3.1-pro-uncensored`（$5/$15）。
 
 ## 無審核供應商比較（每 1M token，2026-11-10 查價）
 

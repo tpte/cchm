@@ -97,10 +97,17 @@ const BRAIN_MODEL = process.env.CCHM_BRAIN_LANE === 'fast'
 
 // Claude Code 只認自家模型名，遇到 mimo/deepseek 會警告 "doesn't recognize the model"，
 // 連帶影響它對 context window / thinking 的假設。所以在設定檔用官方名字，這裡翻成真模型。
+// 工作手：全 Silk 模式下也走 Silk（同一家、無審核、免跨供應商）；
+// 否則預設走 OpenRouter 的 1017 nitro（最便宜的輸入價）
+const WORKER_MODEL = process.env.CCHM_WORKER_MODEL_OVERRIDE
+  || (process.env.CCHM_BRAIN_LANE === 'silk'
+      ? (process.env.CCHM_SILK_WORKER_MODEL || 'deepseek-v4.1-flash-1017-uncensored')
+      : 'deepseek/deepseek-v4.1-flash-1017:nitro');
+
 const CLAUDE_ALIAS = [
   [/^claude-opus/i, BRAIN_MODEL],
   [/^claude-sonnet/i, BRAIN_MODEL],
-  [/^claude-haiku/i, 'deepseek/deepseek-v4.1-flash-1017:nitro'],
+  [/^claude-haiku/i, WORKER_MODEL],
 ];
 
 function normalizeModel(model) {
@@ -309,13 +316,15 @@ function forward(rawBody, req, res, t0) {
         const ms = Date.now() - t0;
         const inTok = lastMatch(tail, /"input_tokens":(\d+)/g);
         const outTok = lastMatch(tail, /"output_tokens":(\d+)/g);
+        const cacheTok = lastMatch(tail, /"cache_read_input_tokens":(\d+)/g) || 0;
         const bill = COST_PER_M[whichName]?.[modelName];
+        // cache read 一般約 input 價的 1/10～1/4，這裡用 0.25 保守估，並在 log 標 cache 量
         const cost = bill && inTok != null && outTok != null
-          ? Number(((inTok / 1e6) * bill[0] + (outTok / 1e6) * bill[1]).toFixed(6))
+          ? Number(((inTok / 1e6) * bill[0] + (cacheTok / 4 / 1e6) * bill[0] + (outTok / 1e6) * bill[1]).toFixed(6))
           : null;
         console.log(`[cchm] ${req.method} ${req.url} model=${modelName} → ${whichName} ${ur.statusCode} ${bytes}B ${ms}ms` +
           (inTok != null ? ` in=${inTok} out=${outTok}` : '') + (cost != null ? ` $${cost}` : '') + (isRetry ? ' (retry)' : ''));
-        logUsage({ ts: new Date().toISOString(), op: 'messages', model: modelName, upstream: whichName, status: ur.statusCode, bytes, ms, in_tokens: inTok, out_tokens: outTok, cost_usd: cost, retry: !!isRetry });
+        logUsage({ ts: new Date().toISOString(), op: 'messages', model: modelName, upstream: whichName, status: ur.statusCode, bytes, ms, in_tokens: inTok, out_tokens: outTok, cache_tokens: cacheTok, cost_usd: cost, retry: !!isRetry });
       });
       ur.pipe(res);
     });

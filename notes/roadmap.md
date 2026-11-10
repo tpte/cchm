@@ -82,6 +82,26 @@ Claude Code 同一個任務實測（wordcount 腳本 + 自測）：
 結論：GLM-5.3 跑分略高但貴 7 倍；GLM-5.3-Flash 首字快但跑完整任務反而慢。
 **調度腦選 1017**，需要最強推理時才切 GLM-5.3 旗艦。
 
+### 2026-11-10 第四輪：A/B 測試（全 Silk vs 主 Silk＋手 OpenRouter 高階）
+
+流程：`scripts/bench-lanes.py`，3 個配置 × 3 個任務，全部強制用 Task 委派給 worker，
+驗收看客觀結果（pytest 通過、answer.json 內容比對），並檢查 worker 是否真的被呼叫。
+
+| 配置 | 通過 | 總牆鐘 | 請求 | 成本 |
+|---|---|---|---|---|
+| A 全 Silk 1017（腦+手同顆） | 3/3 | **110.6s** | 24 | $0.0238 |
+| B1 手 = OpenRouter z-ai/glm-5.3 | 3/3 | 164.5s（+49%） | 32 | $0.0200 |
+| B2 手 = OpenRouter gpt-5.6-luna | 3/3 | 149.1s（+35%） | 27 | $0.0212 |
+
+追加審查測試（同一組敏感題）：OpenRouter 的 glm-5.3 與 gpt-5.6-luna **3/3 全部拒絕**。
+OpenRouter 上唯一的 uncensored 模型是 `dolphin-mistral-24b`（24B，品質不夠當工作手）。
+
+結論：B 的品質沒有提升（都全過）、速度慢 35–49%、成本只便宜 10–16%，而且工作手會被審查擋住。
+**採用 A：全 Silk 1017（腦與手同顆），WildWest 只當自動 fallback。** 已寫進 systemd unit 的 `CCHM_BRAIN_LANE=silk`。
+
+第一次跑發現的設計缺陷（已修）：任務太簡單時主對話自己做，worker 根本沒被呼叫 → benchmark 測到的是
+「主對話」而不是「工作手」。現在 prompt 一律要求用 Task 委派，並在結果裡記 `models` 與 `worker_used`。
+
 ## 待辦（依價值排序）
 
 0. **Silk 要不要當預設**（等使用者決定）：實測成本便宜 3.4 倍但速度沒贏（3.4s vs 2.9s），
