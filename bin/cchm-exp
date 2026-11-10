@@ -93,7 +93,9 @@ case "${1:-}" in
     git tag "$PROMOTE_TAG" master        # 退回錨點：merge 前的主線狀態
     git merge --no-edit -q "exp/$NAME"
     git tag -f latest "$PROMOTE_TAG"
-    prod_restart && echo "已 promote：$PROMOTE_TAG（rollback: cchm-exp rollback $PROMOTE_TAG）"
+    prod_restart || true
+    git push origin master --tags --force --force-with-lease=latest:refs/tags/latest -q 2>/dev/null || git push origin master -q || true
+    echo "已 promote：$PROMOTE_TAG（rollback: cchm-exp rollback $PROMOTE_TAG）"
     ;;
   drop)
     NAME="${2:?用法: cchm-exp drop <name>}"
