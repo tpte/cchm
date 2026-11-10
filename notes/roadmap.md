@@ -135,6 +135,14 @@ OpenRouter 上唯一的 uncensored 模型是 `dolphin-mistral-24b`（24B，品�
 品質完全相同。結論：**預設一層**，雙層只保留給「輸出會爆 context」「真正獨立的大工作並行」「要第二意見」。
 dispatcher 已改為「預設自己直接做」。CCHM 原本的「弱腦＋強手」分工前提（MiMo 當腦）在全 Silk 後已不存在。
 
+### 2026-11-10 第七輪：最終優化（單上游 v0.3、一層預設、測試提速）
+
+- router 縮成單一上游（454 → 230 行），移除 WildWest／OpenRouter／failover／count_tokens 借道
+- doctor 車道檢查改 brain／worker／pro（全在 Silk）；systemd unit 移除舊 lane 變數
+- `bench-layers.py` 加 `--jobs` 並行（整批牆鐘 6 次從 ~10 分鐘降到 ~4 分鐘）
+- 最終驗證：doctor 全綠、端到端 33.9s、單層 41s／雙層 93–200s（皆 6/6）
+- 注意：並行跑 bench 會互相干擾耗時，比較絕對延遲時要循序
+
 ## 待辦（依價值排序）
 
 0. **Silk 要不要當預設**（等使用者決定）：實測成本便宜 3.4 倍但速度沒贏（3.4s vs 2.9s），

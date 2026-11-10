@@ -35,7 +35,7 @@ CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$BASE/v1/models")"
 
 # 3) 三條車道延遲
 echo; echo "  車道延遲（串流首字 / 20 token 請求）"
-for pair in "brain:claude-sonnet-4-5" "worker:claude-haiku-4-5" "heavy:hh-deepseek-v4.1-flash-1017"; do
+for pair in "brain:claude-sonnet-4-5" "worker:claude-haiku-4-5" "pro:kimi-k3.1-pro-uncensored"; do
   lane="${pair%%:*}"; model="${pair#*:}"
   out="$(curl -sN -o /tmp/.cchm_probe.$$ -w '%{time_total} %{http_code}' --max-time 40 \
     -H 'content-type: application/json' -H "x-api-key: $TOKEN" \
@@ -50,22 +50,6 @@ for pair in "brain:claude-sonnet-4-5" "worker:claude-haiku-4-5" "heavy:hh-deepse
     printf '  ❌ %-7s %-28s → HTTP %s\n' "$lane" "$model" "$code"; fail=$((fail+1))
   fi
 done
-
-# 3.5) Silk 車道（只有設了 SILK_API_KEY 才測）
-SILK="$(sed -n 's/.*"silk":\(true\|false\).*/\1/p' <<<"$H")"
-if [[ "$SILK" == "true" ]]; then
-  out="$(curl -sN -o /tmp/.cchm_silk.$$ -w '%{time_total} %{http_code}' --max-time 60 \
-    -H 'content-type: application/json' -H "x-api-key: $TOKEN" \
-    -d '{"model":"deepseek-v4.1-flash-1017-uncensored","max_tokens":20,"stream":true,"messages":[{"role":"user","content":"say ok"}]}' \
-    "$BASE/v1/messages" || echo '9.99 000')"
-  t="${out%% *}"; code="${out##* }"
-  real="$(grep -o '"model":"[^"]*"' /tmp/.cchm_silk.$$ 2>/dev/null | head -1 | cut -d'"' -f4)"
-  rm -f /tmp/.cchm_silk.$$
-  [[ "$code" == "200" ]] && printf '  ✅ %-7s %-28s → %-34s %ss\n' "silk" "deepseek-1017-uncensored" "${real:-?}" "$t" \
-                         || { printf '  ❌ %-7s HTTP %s\n' "silk" "$code"; fail=$((fail+1)); }
-else
-  echo "  ℹ️  silk 未啟用（沒有 SILK_API_KEY）"
-fi
 
 # 4) count_tokens（OpenRouter 車道原本會 404，這裡要回 200 且有 input_tokens）
 CT="$(curl -s --max-time 20 -X POST "$BASE/v1/messages/count_tokens" \

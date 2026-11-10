@@ -1,204 +1,79 @@
 #!/usr/bin/env node
-// cchm-router — Claude Code 的單一後端端點，依 model 名稱分流到不同上游與車道
+// cchm-router v0.3 — 單一上游（Silk Compute）的 Claude Code 代理
 //
-// 車道：
-//   brain  mimo-v2.6-flash-outlaw                  → wildwestapi.com  (調度腦：只拆解、派工)
-//   worker deepseek/deepseek-v4.1-flash-1017:nitro → openrouter.ai    (工作手：實際寫碼)
-//   heavy  hh-* 前綴                                → wildwestapi.com  (outlaw 重車道)
+// 設計原則（2026-11-10 實測定案，見 docs/DECISIONS.md D014）：
+//   1. 只有一個上游。多 upstream ＋ 自動換道讓架構變複雜，卻沒有換到品質或速度。
+//   2. Claude Code 只認自家模型名 → 這裡翻譯成 Silk 的 model id。
+//   3. SSE 原樣直通、不緩衝；只做必要的事：權杖、翻譯、指紋清洗、用量記帳。
 //
-// v0.2 新增：本地 /v1/models、count_tokens 修正（OpenRouter 沒有這端點，實測 404）、
-// 上游 5xx/429/連線錯誤自動換道、client 指紋 header 清洗、keep-alive 連線池、
-// JSONL 用量日誌、reusePort（換版可零停機）、本地權杖檢查。
-//
-// 零依賴：只用 node 內建 http/https/fs。SSE 原樣直通、不緩衝。
+// 端點：POST /v1/messages ｜ POST /v1/messages/count_tokens（本地估算）｜ GET /v1/models ・ /healthz
 
-import http from 'node:http';
 import https from 'node:https';
+import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const VERSION = '0.2.0';
+const VERSION = '0.3.0';
 const PORT = Number(process.env.CCHM_PORT || 8791);
 const STARTED = Date.now();
 
 /* ── 金鑰 ─────────────────────────────────────────────── */
 function readKey(envFile, keyName) {
   try {
-    const line = fs.readFileSync(envFile, 'utf8').split('\n')
-      .find(l => l.startsWith(keyName + '='));
+    const line = fs.readFileSync(envFile, 'utf8').split('\n').find(l => l.startsWith(keyName + '='));
     if (line) return line.slice(keyName.length + 1).replace(/^"|"|\r$/g, '');
   } catch {}
   return '';
 }
 
-const WILDWEST_KEY =
-  process.env.WILDWEST_API_KEY ||
-  readKey(`${process.env.HERMES_SECRETS_FILE || `${process.env.HOME}/.hermes/.secrets/wildwest.env`}`, 'WILDWEST_API_KEY') ||
-  readKey(`${process.env.HERMES_ENV_FILE || `${process.env.HOME}/.hermes/.env`}`, 'WILDWEST_API_KEY');
-const OPENROUTER_KEY =
-  process.env.OPENROUTER_API_KEY ||
-  readKey(`${process.env.HERMES_ENV_FILE || `${process.env.HOME}/.hermes/.env`}`, 'OPENROUTER_API_KEY');
-
-// Silk Compute：同一批 abliterated 模型（Kimi K3.1 Pro / DeepSeek 1017 / GLM-5.3 / Hy4），
-// 原生支援 Anthropic Messages，1M context、8 並發、prompt caching，價格約為 WildWest 的 1/2～1/4.5。
-// 沒有金鑰就整條車道自動停用（不影響既有行為）。
 const SILK_KEY =
   process.env.SILK_API_KEY ||
   readKey(`${process.env.HOME}/.hermes/.secrets/silk.env`, 'SILK_API_KEY') ||
   readKey(`${process.env.HERMES_ENV_FILE || `${process.env.HOME}/.hermes/.env`}`, 'SILK_API_KEY');
 
-if (!OPENROUTER_KEY) {
-  console.error('[cchm] 缺 OPENROUTER_API_KEY（~/.hermes/.env）');
+if (!SILK_KEY) {
+  console.error('[cchm] 缺 SILK_API_KEY（~/.hermes/.secrets/silk.env）');
   process.exit(1);
 }
-if (!WILDWEST_KEY) {
-  console.error('[cchm] 警告：缺 WILDWEST_API_KEY，調度腦（mimo）與重車道會失效，只剩 openrouter 工作手');
-}
 
-const UPSTREAMS = {
-  wildwest:   { host: 'wildwestapi.com', port: 443, key: WILDWEST_KEY },
-  openrouter: { host: 'openrouter.ai', port: 443, pathPrefix: '/api', key: OPENROUTER_KEY },
-  silk:       { host: 'api.silkcompute.com', port: 443, key: SILK_KEY },
-};
+const UPSTREAM = { host: 'api.silkcompute.com', port: 443, key: SILK_KEY };
 
-/* ── 車道定義（/v1/models 與文件用；實際路由仍看 model 名稱） ── */
-const LANES = {
-  brain:  { model: 'mimo-v2.6-flash-outlaw',                  upstream: 'wildwest',   note: '調度腦：拆解、派工、驗收' },
-  worker: { model: 'deepseek/deepseek-v4.1-flash-1017:nitro', upstream: 'openrouter', note: '工作手：寫碼、測試、除錯' },
-  heavy:  { model: 'hh-deepseek-v4.1-flash-1017',             upstream: 'wildwest',   note: '重車道：輸出短、動作導向' },
-};
-if (SILK_KEY) {
-  LANES.silk = { model: 'deepseek-v4.1-flash-1017-uncensored', upstream: 'silk', note: 'Silk 無審核車道（Anthropic 原生、8 並發）' };
-  LANES.silkPro = { model: 'kimi-k3.1-pro-uncensored', upstream: 'silk', note: 'Silk 最強模型（貴）' };
-}
-
-// hh- 前綴 = 同名模型改走 WildWest 的 outlaw 端點
-//   實測 2026-11-10：outlaw 版直接輸出動作塊，輸出精簡；適合攻堅/枚舉，不適合長篇規劃
-const ALIAS_MAP = {
-  'hh-mimo-v2.6-flash': 'mimo-v2.6-flash-outlaw',
-  'hh-deepseek-v4.1-flash-1017': 'deepseek-v4.1-flash-1017-outlaw',
-};
-
-const ROUTE_RULES = [
-  ['mimo', 'wildwest'],       // MiMo 2.6 Flash — 調度腦
-  ['deepseek', 'openrouter'], // DeepSeek V4.1 Flash 1017 — 工作手
-];
-// 註：ROUTE_RULES 的比對已搬進 routeFor（需先解析 claude-* 別名），此處保留作為文件說明。
-
-// 調度腦：預設走 wildwest 的 outlaw 版（無審核，實測 p50 2.9s，已是無審核陣營最快）；
-// CCHM_BRAIN_LANE=fast → 走 openrouter 官方 mimo-flash（實測 0.83s、$0.14/M，快又便宜，但**有審查、實測會拒繞限流類請求**）
-// 實測 2026-11-10：ultraspeed 版 $4.35/$8.7、1.32s 且明確拒絕該類請求 → 沒有任何優勢，已移除
-// CCHM_BRAIN_LANE=uncensored → 走 Silk 的 deepseek-v4.1-flash-1017-uncensored（無審核、$0.60/$2.40、OpenAI/Anthropic 雙介面）
-const BRAIN_MODEL = process.env.CCHM_BRAIN_LANE === 'fast'
-  ? (process.env.CCHM_BRAIN_FAST_MODEL || 'xiaomi/mimo-v2.6-flash')
-  : process.env.CCHM_BRAIN_LANE === 'silk'
-    ? (process.env.CCHM_BRAIN_SILK_MODEL || 'deepseek-v4.1-flash-1017-uncensored')
-    : 'mimo-v2.6-flash-outlaw';
-
-// Claude Code 只認自家模型名，遇到 mimo/deepseek 會警告 "doesn't recognize the model"，
-// 連帶影響它對 context window / thinking 的假設。所以在設定檔用官方名字，這裡翻成真模型。
-// 工作手：全 Silk 模式下也走 Silk（同一家、無審核、免跨供應商）；
-// 否則預設走 OpenRouter 的 1017 nitro（最便宜的輸入價）
-const WORKER_MODEL = process.env.CCHM_WORKER_MODEL_OVERRIDE
-  || (process.env.CCHM_BRAIN_LANE === 'silk'
-      ? (process.env.CCHM_SILK_WORKER_MODEL || 'deepseek-v4.1-flash-1017-uncensored')
-      : 'deepseek/deepseek-v4.1-flash-1017:nitro');
+// ── 模型：預設一層（腦＝工作手同一顆），兩層只有 overhead（D013）──
+const BRAIN = process.env.CCHM_BRAIN_MODEL || 'deepseek-v4.1-flash-1017-uncensored';
+const WORKER = process.env.CCHM_WORKER_MODEL || BRAIN;
+const PRO = process.env.CCHM_PRO_MODEL || 'kimi-k3.1-pro-uncensored';
 
 const CLAUDE_ALIAS = [
-  [/^claude-opus/i, BRAIN_MODEL],
-  [/^claude-sonnet/i, BRAIN_MODEL],
-  [/^claude-haiku/i, WORKER_MODEL],
+  [/^claude-opus/i, BRAIN],
+  [/^claude-sonnet/i, BRAIN],
+  [/^claude-haiku/i, WORKER],
 ];
+
+const LANES = {
+  brain: { model: BRAIN, note: '調度腦與工作手（預設一層，同一顆）' },
+  pro: { model: PRO, note: '最強推理（貴，只有硬任務才切）' },
+};
 
 function normalizeModel(model) {
   const m = String(model || '');
   for (const [re, real] of CLAUDE_ALIAS) if (re.test(m)) return real;
-  // 沒有 Silk 金鑰時，把 Silk 的 -uncensored 名對到 WildWest 的 -outlaw 名（同一批模型，只是命名不同）
-  if (!SILK_KEY && /-uncensored$/i.test(m)) return m.replace(/-uncensored$/i, '-outlaw');
-  // 保險：任何其他 claude-* 名字一律導到調度腦，絕不讓它原樣打到 OpenRouter 的真 Claude（帳單會爆）
-  if (/^claude/i.test(m)) return BRAIN_MODEL;
-  for (const [prefix, real] of Object.entries(ALIAS_MAP)) {
-    if (m === prefix || m.startsWith(prefix + ':') || m.startsWith(prefix + '-')) {
-      return real + m.slice(prefix.length);
-    }
-    if (m.startsWith(prefix)) return real;
-  }
+  if (/^claude/i.test(m)) return BRAIN;   // 其他 claude-* 一律在地化，不外流成真 Claude
+  if (/^hh-/i.test(m)) return BRAIN;      // 舊的重道別名，已無意義
   return m;
 }
 
-function routeFor(rawModel, realModel) {
-  const raw = String(rawModel || '').toLowerCase();
-  if (raw.startsWith('hh-')) return process.env.CCHM_HEAVY_ROUTE || 'wildwest';
-  const m = String(realModel || '').toLowerCase();
-  if (m.includes('/')) return 'openrouter';      // OpenRouter 命名（vendor/model）一律走 openrouter
-  if (m.includes('uncensored')) return SILK_KEY ? 'silk' : 'wildwest';  // Silk 專屬命名
-  if (m.includes('outlaw')) return 'wildwest';   // outlaw 版只存在於 wildwest（實測真名直送 openrouter 會失敗）
-  if (m.includes('mimo')) return 'wildwest';
-  if (m.includes('deepseek')) return 'openrouter';
-  return process.env.CCHM_DEFAULT_ROUTE || 'openrouter';
-}
-
-// 換道計畫：只在「另一家有同款模型、只是名字不同」時成立，不猜不存在的模型。
-// 目前確定可用的一對：openrouter 的 1017:nitro ⇄ wildwest 的 1017-outlaw（兩邊都實測 200）
-function fallbackFor(model, target) {
-  if (target === 'openrouter' && /deepseek/i.test(model)) {
-    const bare = String(model).replace(/^.*\//, '').replace(/:.*$/, '').replace(/-outlaw$/, '');
-    return { target: 'wildwest', model: `${bare}-outlaw` };
-  }
-  // 調度腦也有備援：wildwest 掛掉或擋住時改走 openrouter 的 mimo（失去無審核，但整條不會死）
-  if (target === 'wildwest' && /mimo/i.test(model)) {
-    return { target: 'openrouter', model: process.env.CCHM_BRAIN_FALLBACK || 'xiaomi/mimo-v2.6-flash' };
-  }
-  // Silk ⇄ WildWest：同一批 abliterated 模型、只是命名不同（-uncensored ⇄ -outlaw）
-  if (target === 'silk' && SILK_KEY) {
-    return { target: 'wildwest', model: String(model).replace(/-uncensored$/, '-outlaw') };
-  }
-  if (target === 'wildwest' && SILK_KEY && /-outlaw$/.test(model)) {
-    return { target: 'silk', model: String(model).replace(/-outlaw$/, '-uncensored') };
-  }
-  return null;
-}
-
-/* ── 單價表（USD per 1M tokens：[input, output]）──
-   來源：WildWest /v1/models、OpenRouter /api/v1/models、Silk llms.txt（2026-11-10 查價） */
+// 單價（USD per 1M：[input, output, cacheRead]），來源 Silk llms.txt / models 頁
 const COST_PER_M = {
-  wildwest: {
-    'mimo-v2.6-flash-outlaw': [1.00, 2.00],
-    'glm-5.3-flash-outlaw': [0.30, 1.00],
-    'glm-5.3-outlaw': [2.00, 5.00],
-    'glm-5.3-flash-cyber': [0.30, 1.00],
-    'apex-flash': [0.30, 1.00],
-    'deepseek-v4.1-flash-1017-outlaw': [1.25, 2.50],
-    'deepseek-v4.1-flash-lite-1017-outlaw': [0.36, 1.44],
-    'kimi-k3.1-pro-outlaw': [7.50, 37.50],
-    'hy4-outlaw': [3.20, 6.40],
-    'qwen3.8-27b-outlaw': [1.50, 5.00],
-    'qwen3.8-27b-fast-outlaw': [1.75, 5.50],
-  },
-  openrouter: {
-    'xiaomi/mimo-v2.6-flash': [0.14, 0.28],
-    'xiaomi/mimo-v2.6-pro-ultraspeed': [4.35, 8.70],
-    'deepseek/deepseek-v4.1-flash-1017:nitro': [0.006, 0.50],
-  },
-  silk: {
-    'deepseek-v4.1-flash-1017-uncensored': [0.28, 1.00],
-    'glm-5.3-flash-uncensored': [0.24, 1.00],
-    'kimi-k3.1-pro-uncensored': [5.00, 15.00],
-    'hy4-uncensored': [1.60, 3.20],
-    'glm-5.3-uncensored': [2.00, 4.00],
-  },
+  'deepseek-v4.1-flash-1017-uncensored': [0.28, 1.00, 0.07],
+  'deepseek-v4.1-flash-1017': [0.60, 2.40, 0.07],
+  'glm-5.3-flash-uncensored': [0.24, 1.00, 0.08],
+  'glm-5.3-uncensored': [2.00, 4.00, 0.30],
+  'hy4-uncensored': [1.60, 3.20, 0.30],
+  'kimi-k3.1-pro-uncensored': [5.00, 15.00, 0.50],
 };
 
-// 取字串裡「最後一個」符合的值（SSE 的 usage 會在 message_start 與 message_delta 各出現一次）
-function lastMatch(str, re) {
-  let m, last = null;
-  while ((m = re.exec(str))) last = Number(m[1]);
-  return last;
-}
-
-/* ── 連線池 & 用量日誌 ───────────────────────────────── */
+/* ── 連線池與用量日誌 ─────────────────────────────────── */
 const agent = new https.Agent({ keepAlive: true, keepAliveMsecs: 30_000, maxSockets: 64 });
-
 const LOG_DIR = process.env.CCHM_LOG_DIR || path.join(process.env.HOME || '.', 'cchm', '.exp', 'logs');
 const USAGE_FILE = path.join(LOG_DIR, process.env.CCHM_USAGE_FILE || 'usage.jsonl');
 let logReady = false;
@@ -209,195 +84,89 @@ function logUsage(rec) {
   } catch {}
 }
 
-/* ── 指紋清洗：只放行必要 header；user-agent / x-stainless-* / x-app 等一律不轉發 ── */
-const PASSTHROUGH_HEADERS = new Set([
-  'content-type', 'accept', 'accept-encoding',
-  'anthropic-version', 'anthropic-beta',
-]);
-function cleanHeaders(req, up) {
+/* ── header 清洗：只放行必要的，其餘（UA／x-stainless-*／x-app）不轉發 ── */
+const PASS = new Set(['content-type', 'accept', 'accept-encoding', 'anthropic-version', 'anthropic-beta']);
+function cleanHeaders(req) {
   const out = {};
-  for (const [k, v] of Object.entries(req.headers)) {
-    if (PASSTHROUGH_HEADERS.has(k.toLowerCase())) out[k] = v;
-  }
-  out['user-agent'] = process.env.CCHM_UA || 'cchm/0.2';
-  out.authorization = `Bearer ${up.key}`;
-  out['x-api-key'] = up.key;
+  for (const [k, v] of Object.entries(req.headers)) if (PASS.has(k.toLowerCase())) out[k] = v;
+  out['user-agent'] = process.env.CCHM_UA || 'cchm/0.3';
+  out.authorization = `Bearer ${UPSTREAM.key}`;
+  out['x-api-key'] = UPSTREAM.key;
   out['anthropic-version'] = out['anthropic-version'] || '2023-06-01';
-  if (up === UPSTREAMS.openrouter) out['x-title'] = 'cchm';
   return out;
 }
 
-/* ── 本地權杖檢查（避免本機任何程式白嫖金鑰；CCHM_REQUIRE_TOKEN="" 可關） ── */
 const REQUIRED_TOKEN = process.env.CCHM_REQUIRE_TOKEN ?? 'cchm-local';
 function authorized(req) {
   if (!REQUIRED_TOKEN) return true;
   const auth = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-  const key = String(req.headers['x-api-key'] || '');
-  return auth === REQUIRED_TOKEN || key === REQUIRED_TOKEN;
+  return auth === REQUIRED_TOKEN || String(req.headers['x-api-key'] || '') === REQUIRED_TOKEN;
 }
 
-function upstreamPath(up, url) {
-  if (!up.pathPrefix) return url;
-  return url.startsWith(up.pathPrefix) ? url : up.pathPrefix + url;
+function lastMatch(str, re) {
+  let m, last = null;
+  while ((m = re.exec(str))) last = Number(m[1]);
+  return last;
 }
 
-/* ── 本地估算（count_tokens 備援；CJK 約 1 token/字、英文約 4 字/token → 取 2.5 字/token） ── */
-function estimateTokens(bodyObj) {
+/* ── 本機 token 估算（Silk 沒有 /count_tokens）── */
+function estimateTokens(body) {
   let chars = 0;
   const walk = (v) => {
     if (typeof v === 'string') chars += v.length;
     else if (Array.isArray(v)) v.forEach(walk);
     else if (v && typeof v === 'object') Object.values(v).forEach(walk);
   };
-  walk(parsedMessages(bodyObj));
+  if (body.system) walk(body.system);
+  if (Array.isArray(body.messages)) walk(body.messages);
   return Math.max(1, Math.ceil(chars / 2.5));
 }
-function parsedMessages(b) {
-  const out = [];
-  if (b.system) out.push(b.system);
-  if (Array.isArray(b.messages)) out.push(b.messages);
-  return out;
-}
 
-/* ── 換道條件：這些狀態碼視為「這家不行」，換到另一家重試一次 ──
-   429 限流、403 政策封鎖（繞審查的關鍵：被封就換 outlaw 車道）、5xx 上游掛掉 */
-const FAILOVER_CODES = new Set(
-  (process.env.CCHM_FAILOVER_CODES || '403,429,500,502,503,504,529')
-    .split(',').map(s => Number(s.trim())).filter(Boolean)
-);
-
-/* ── 轉發（含一次換道重試） ──────────────────────────── */
+/* ── 轉發（單一上游，SSE 直通）───────────────────────── */
 function forward(rawBody, req, res, t0) {
   let parsed = {};
   try { parsed = JSON.parse(rawBody.toString('utf8') || '{}'); } catch {}
-  const rawModel = parsed.model || '';
-  const model = normalizeModel(rawModel);
-  const target = routeFor(rawModel, model);
-  const fb = fallbackFor(model, target);
-
-  const attempt = (whichName, modelName, isRetry) => {
-    const which = UPSTREAMS[whichName];
-    if (!which.key) {
-      if (!isRetry && fb && UPSTREAMS[fb.target]?.key) {
-        console.log(`[cchm] ${whichName} 沒有金鑰 → 改用 ${fb.target} (${fb.model})`);
-        return attempt(fb.target, fb.model, true);
-      }
-      res.writeHead(503, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: `cchm: ${whichName} 沒有金鑰` } }));
-    }
-    const body = Buffer.from(JSON.stringify({ ...parsed, model: modelName }));
-    const headers = cleanHeaders(req, which);
-    headers['content-length'] = Buffer.byteLength(body);
-
-    const r = https.request({
-      hostname: which.host,
-      port: which.port,
-      path: upstreamPath(which, req.url),
-      method: req.method,
-      headers,
-      agent,
-    }, (ur) => {
-      if (!isRetry && FAILOVER_CODES.has(ur.statusCode) && fb) {
-        ur.resume();
-        console.log(`[cchm] ${whichName} ${ur.statusCode} → failover 到 ${fb.target} (${fb.model})`);
-        logUsage({ ts: new Date().toISOString(), op: 'failover', model, from: whichName, status: ur.statusCode, to: fb.target });
-        return attempt(fb.target, fb.model, true);
-      }
-      res.writeHead(ur.statusCode, ur.headers);
-      let bytes = 0;
-      let tail = '';
-      ur.on('data', (c) => {
-        bytes += c.length;
-        // SSE 的 usage 在 message_start（input_tokens）與 message_delta（output_tokens）裡，
-        // 只留最後 4KB 就夠（body 太大的話不解析，避免吃記憶體）
-        if (bytes < 4_000_000) tail = (tail + c.toString('utf8')).slice(-4096);
-      });
-      ur.on('end', () => {
-        const ms = Date.now() - t0;
-        const inTok = lastMatch(tail, /"input_tokens":(\d+)/g);
-        const outTok = lastMatch(tail, /"output_tokens":(\d+)/g);
-        const cacheTok = lastMatch(tail, /"cache_read_input_tokens":(\d+)/g) || 0;
-        const bill = COST_PER_M[whichName]?.[modelName];
-        // cache read 一般約 input 價的 1/10～1/4，這裡用 0.25 保守估，並在 log 標 cache 量
-        const cost = bill && inTok != null && outTok != null
-          ? Number(((inTok / 1e6) * bill[0] + (cacheTok / 4 / 1e6) * bill[0] + (outTok / 1e6) * bill[1]).toFixed(6))
-          : null;
-        console.log(`[cchm] ${req.method} ${req.url} model=${modelName} → ${whichName} ${ur.statusCode} ${bytes}B ${ms}ms` +
-          (inTok != null ? ` in=${inTok} out=${outTok}` : '') + (cost != null ? ` $${cost}` : '') + (isRetry ? ' (retry)' : ''));
-        logUsage({ ts: new Date().toISOString(), op: 'messages', model: modelName, upstream: whichName, status: ur.statusCode, bytes, ms, in_tokens: inTok, out_tokens: outTok, cache_tokens: cacheTok, cost_usd: cost, retry: !!isRetry });
-      });
-      ur.pipe(res);
-    });
-
-    r.on('error', (err) => {
-      if (!isRetry && fb) {
-        console.log(`[cchm] ${whichName} 連線失敗 ${err.message} → failover 到 ${fb.target}`);
-        logUsage({ ts: new Date().toISOString(), op: 'failover', model, from: whichName, error: err.message, to: fb.target });
-        return attempt(fb.target, fb.model, true);
-      }
-      console.error(`[cchm] ${whichName} 失敗:`, err.message);
-      logUsage({ ts: new Date().toISOString(), op: 'messages', model: modelName, upstream: whichName, error: err.message, ms: Date.now() - t0 });
-      if (!res.headersSent) res.writeHead(502, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: `cchm upstream error (${whichName}): ${err.message}` } }));
-    });
-
-    if (body.length) r.write(body);
-    r.end();
-  };
-
-  attempt(target, model, false);
-}
-
-/* ── count_tokens：OpenRouter 沒有這端點（實測 404），一律用 wildwest 的 tokenizer，失敗則本地估 ── */
-function handleCountTokens(rawBody, req, res, t0) {
-  let parsed = {};
-  try { parsed = JSON.parse(rawBody.toString('utf8') || '{}'); } catch {}
-  const up = UPSTREAMS.wildwest;
-  const estimated = () => {
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ input_tokens: estimateTokens(parsed), estimated: true }));
-    logUsage({ ts: new Date().toISOString(), op: 'count_tokens', estimated: true, ms: Date.now() - t0 });
-  };
-  if (!up.key) return estimated();
-
-  const body = Buffer.from(JSON.stringify({
-    model: process.env.CCHM_TOKENIZER_MODEL || 'mimo-v2.6-flash-outlaw',
-    messages: parsed.messages, system: parsed.system,
-  }));
-  const headers = cleanHeaders(req, up);
+  const model = normalizeModel(parsed.model);
+  const body = Buffer.from(JSON.stringify({ ...parsed, model }));
+  const headers = cleanHeaders(req);
   headers['content-length'] = Buffer.byteLength(body);
 
   const r = https.request({
-    hostname: up.host, port: up.port, path: '/v1/messages/count_tokens',
-    method: 'POST', headers, agent,
+    hostname: UPSTREAM.host, port: UPSTREAM.port, path: req.url,
+    method: req.method, headers, agent,
   }, (ur) => {
-    let buf = '';
-    ur.on('data', (c) => { buf += c; });
-    ur.on('end', () => {
-      if (ur.statusCode === 200) {
-        res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(buf);
-        logUsage({ ts: new Date().toISOString(), op: 'count_tokens', status: 200, ms: Date.now() - t0 });
-      } else estimated();
+    res.writeHead(ur.statusCode, ur.headers);
+    let bytes = 0, tail = '';
+    ur.on('data', (c) => {
+      bytes += c.length;
+      if (bytes < 4_000_000) tail = (tail + c.toString('utf8')).slice(-4096);
     });
+    ur.on('end', () => {
+      const ms = Date.now() - t0;
+      const inTok = lastMatch(tail, /"input_tokens":(\d+)/g);
+      const outTok = lastMatch(tail, /"output_tokens":(\d+)/g);
+      const cacheTok = lastMatch(tail, /"cache_read_input_tokens":(\d+)/g) || 0;
+      const bill = COST_PER_M[model];
+      const cost = bill && inTok != null && outTok != null
+        ? Number(((inTok / 1e6) * bill[0] + (cacheTok / 1e6) * bill[2] + (outTok / 1e6) * bill[1]).toFixed(6))
+        : null;
+      console.log(`[cchm] ${req.method} ${req.url} model=${model} ${ur.statusCode} ${bytes}B ${ms}ms` +
+        (inTok != null ? ` in=${inTok} out=${outTok} cache=${cacheTok}` : '') + (cost != null ? ` $${cost}` : ''));
+      logUsage({ ts: new Date().toISOString(), op: 'messages', model, status: ur.statusCode,
+                 bytes, ms, in_tokens: inTok, out_tokens: outTok, cache_tokens: cacheTok, cost_usd: cost });
+    });
+    ur.pipe(res);
   });
-  r.on('error', estimated);
-  r.write(body);
-  r.end();
-}
 
-/* ── 本地模型清單（不直通上游，免得 Claude Code 看到別家目錄） ── */
-function handleModels(res) {
-  const now = new Date().toISOString();
-  const data = Object.entries(LANES).map(([lane, v]) => ({
-    id: v.model, type: 'model', display_name: `${lane} — ${v.note}`,
-    created_at: now, lane, upstream: v.upstream,
-  }));
-  res.writeHead(200, { 'content-type': 'application/json' });
-  res.end(JSON.stringify({
-    data, has_more: false,
-    first_id: data[0]?.id ?? null, last_id: data[data.length - 1]?.id ?? null,
-  }));
+  r.on('error', (err) => {
+    console.error('[cchm] silk 失敗:', err.message);
+    logUsage({ ts: new Date().toISOString(), op: 'messages', model, error: err.message, ms: Date.now() - t0 });
+    if (!res.headersSent) res.writeHead(502, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: `cchm: silk ${err.message}` } }));
+  });
+
+  if (body.length) r.write(body);
+  r.end();
 }
 
 /* ── server ──────────────────────────────────────────── */
@@ -408,11 +177,9 @@ const server = http.createServer((req, res) => {
   if (url === '/healthz') {
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify({
-      ok: true, version: VERSION,
+      ok: true, version: VERSION, upstream: UPSTREAM.host,
       uptime_s: Math.round((Date.now() - STARTED) / 1000),
-      routes: Object.keys(UPSTREAMS), lanes: Object.keys(LANES),
-      auth: REQUIRED_TOKEN ? 'token' : 'open',
-      keys: { wildwest: !!WILDWEST_KEY, openrouter: !!OPENROUTER_KEY, silk: !!SILK_KEY },
+      brain: BRAIN, worker: WORKER, auth: REQUIRED_TOKEN ? 'token' : 'open',
     }));
   }
 
@@ -421,34 +188,29 @@ const server = http.createServer((req, res) => {
     return res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'cchm: bad token' } }));
   }
 
-  if (req.method === 'GET' && url.startsWith('/v1/models')) return handleModels(res);
+  if (req.method === 'GET' && url.startsWith('/v1/models')) {
+    const data = Object.entries(LANES).map(([lane, v]) => ({
+      id: v.model, type: 'model', display_name: `${lane} — ${v.note}`, lane,
+    }));
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify({ data, has_more: false,
+      first_id: data[0]?.id ?? null, last_id: data[data.length - 1]?.id ?? null }));
+  }
 
   const chunks = [];
   req.on('data', (c) => chunks.push(c));
   req.on('end', () => {
     const body = Buffer.concat(chunks);
-    if (url.includes('/count_tokens')) return handleCountTokens(body, req, res, t0);
+    if (url.includes('/count_tokens')) {
+      let parsed = {};
+      try { parsed = JSON.parse(body.toString('utf8') || '{}'); } catch {}
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ input_tokens: estimateTokens(parsed), estimated: true }));
+    }
     forward(body, req, res, t0);
   });
 });
 
-// reusePort：新舊版可同時 bind 同一埠，換版不必斷線（Linux only，失敗就退回普通 listen）
-let reuseOk = true;
-server.on('error', (e) => {
-  if (reuseOk) {
-    reuseOk = false;
-    console.error(`[cchm] reusePort 失敗（${e.code || e.message}），改用普通 listen`);
-    server.listen(PORT, '127.0.0.1', () =>
-      console.log(`[cchm] router ${VERSION} on http://127.0.0.1:${PORT} (mimo→wildwest, else→openrouter)`));
-    return;
-  }
-  console.error('[cchm] listen 失敗:', e.message);
-  process.exit(1);
-});
-server.listen({ port: PORT, host: '127.0.0.1', reusePort: true }, () => {
-  console.log(`[cchm] router ${VERSION} on http://127.0.0.1:${PORT} (mimo→wildwest, else→openrouter)`);
-});
-
-for (const sig of ['SIGINT', 'SIGTERM']) {
-  process.on(sig, () => { server.close(); setTimeout(() => process.exit(0), 150); });
-}
+server.on('error', (e) => { console.error('[cchm] listen 失敗:', e.message); process.exit(1); });
+server.listen(PORT, '127.0.0.1', () => console.log(`[cchm] router ${VERSION} on http://127.0.0.1:${PORT} → ${UPSTREAM.host}`));
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { server.close(); setTimeout(() => process.exit(0), 100); });

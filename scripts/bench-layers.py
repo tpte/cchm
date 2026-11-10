@@ -108,18 +108,22 @@ def run_mode(mode: str, run_idx: int) -> dict:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--runs", type=int, default=2)
+    ap.add_argument("--jobs", type=int, default=3, help="並行跑幾個 (mode,run) 組合，預設 3")
     ap.add_argument("--only", default=",".join(MODES))
     args = ap.parse_args()
     modes = [m.strip() for m in args.only.split(",") if m.strip()]
     SCRATCH.mkdir(parents=True, exist_ok=True)
 
+    jobs = [(m, i + 1) for m in modes for i in range(args.runs)]
     rows = []
-    for mode in modes:
-        for i in range(args.runs):
-            print(f"▶ {mode} run{i+1} …", flush=True)
-            r = run_mode(mode, i + 1)
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
+        futs = {pool.submit(run_mode, m, i): (m, i) for m, i in jobs}
+        for f in as_completed(futs):
+            r = f.result()
             rows.append(r)
-            print(f"  {r['passed']}/{r['total']} {r['secs']}s :: {r['results']}", flush=True)
+            print(f"  ✔ {r['mode']} run{r['run']}: {r['passed']}/{r['total']} {r['secs']}s {r['results']}", flush=True)
+    rows.sort(key=lambda r: (r["mode"], r["run"]))
 
     out_dir = REPO / ".exp/logs"
     out_dir.mkdir(parents=True, exist_ok=True)

@@ -1,6 +1,6 @@
 ---
 name: cchm-heavy
-model: hh-deepseek-v4.1-flash-1017
+model: deepseek-v4.1-flash-1017-uncensored
 description: 重車道工作手（WildWest outlaw 端點）。攻堅、枚舉、直接動作類任務。
 ---
 

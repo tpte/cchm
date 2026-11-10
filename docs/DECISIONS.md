@@ -146,3 +146,29 @@
   CCHM 原本「MiMo 弱腦＋DeepSeek 強手」的分工理由，在全 Silk 同顆模型之後已經消失。
 - **教訓**：架構分層要有可量測的收益才留；「看起來比較工程」不是理由。
 - **狀態**：有效
+
+## D014 拿掉 WildWest 備援，router 縮成單一上游（使用者決策 6B）
+
+- **問題**：Silk 之外是否保留 WildWest 作自動 fallback（failover 已實作）。
+- **選項**：A 保留（抗單點故障，但兩套 key、兩份計費、兩種命名）；B 只留 Silk（最單純）。
+- **結論**：B。使用者明確選擇「架構最單純優先」。
+- **改動**：
+  - `src/router.mjs` 從 454 行縮到 ~230 行：移除 multi-upstream、`fallbackFor`、`ALIAS_MAP`、`ROUTE_RULES`、WildWest／OpenRouter 金鑰
+  - `count_tokens` 改本地估算（`ceil(chars/2.5)`，回 `estimated:true`），不再借 WildWest tokenizer
+  - `hh-` 前綴直接映射回預設模型（重車道概念消失，因為全 Silk 都是無審核）
+  - `scripts/cchm-doctor` 車道檢查改為 brain／worker／pro 三條（全在 Silk）
+  - systemd unit 移除 `CCHM_BRAIN_LANE`
+- **代價**：Silk 掛掉時直接 502，沒有自動接手。可接受（單一供應商本來就是這個取捨）。
+- **回退方式**：舊版保留在 `~/.hermes/cache/scratch/cchm-backup/router-v0.2.mjs`，git 歷史也有；要恢復多上游就把該檔放回來、並在 unit 補回金鑰環境變數。
+- **狀態**：有效
+
+## D015 最終驗證（單上游 + 一層）與量測注意事項
+
+- **端到端**：`claude -p` 走 claude-sonnet → Silk `deepseek-v4.1-flash-1017-uncensored`，33.9 秒完成寫檔＋執行，輸出正確。
+- **單層／雙層最終複測**（`bench-layers --runs 2 --jobs 3`，三模式並行跑）：
+  single 41.5/45.0s、parallel 93.0/124.4s、serial 124.1/200.8s，全部 6/6 通過。
+  與前一輪（循序跑）比：single 41→41s 穩定，雙層明顯被並行互相干擾放大（95→124s、130→201s）。
+- **量測教訓**：benchmark 自己並行跑會污染受測對象的耗時。要比較絕對延遲時，被比較的組合要循序跑；
+  並行只適合用來縮短「整批」牆鐘，不適合拿時間當結論。
+- **同向結論不變**：一層永遠最快，雙層沒有品質收益。
+- **狀態**：有效
