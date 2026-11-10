@@ -34,8 +34,11 @@ export API_TIMEOUT_MS="${CCHM_API_TIMEOUT_MS:-1200000}"
 export BASH_DEFAULT_TIMEOUT_MS="${CCHM_BASH_TIMEOUT_MS:-300000}"
 
 # 沒在跑就先把 router 拉起來（port 被占就沿用既有 router）
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+ROUTER="$SCRIPT_DIR/../src/router.mjs"
+[ -f "$ROUTER" ] || ROUTER="$HOME/cchm/src/router.mjs"
 if ! curl -s -o /dev/null "http://127.0.0.1:$PORT/healthz"; then
-  node "$(dirname "$0")/../src/router.mjs" &
+  node "$ROUTER" &
   ROUTER_PID=$!
   trap 'kill $ROUTER_PID 2>/dev/null' EXIT
   sleep 0.4
