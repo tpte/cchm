@@ -74,6 +74,12 @@ function routeFor(model) {
 }
 
 const server = http.createServer((req, res) => {
+  // [exp/healthz] 健康檢查端點：不轉發，本地直接回
+if (req.url === '/healthz') {
+  res.writeHead(200, { 'content-type': 'application/json' });
+  res.end(JSON.stringify({ ok: true, routes: Object.keys(UPSTREAMS) }));
+  return;
+}
   let chunks = [];
   req.on('data', c => chunks.push(c));
   req.on('end', () => forward(Buffer.concat(chunks), req, res));
