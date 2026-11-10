@@ -77,9 +77,27 @@ CLAUDE_BIN="${CCHM_CLAUDE_BIN:-$HOME/.local/share/mise/shims/claude}"
 # 把 dispatcher 的角色提示（去掉 YAML frontmatter）灌進主對話
 ARGS=()
 for a in "$@"; do ARGS+=("$a"); done
-if [ -s "$HOME/cchm/agents/dispatcher.md" ]; then
-  set -- --append-system-prompt "$(sed '1,/^---$/d;/^---$/,$d' "$HOME/cchm/agents/dispatcher.md")" "${ARGS[@]}"
-fi
+SYS_PROMPT=""
+[ -s "$HOME/cchm/agents/dispatcher.md" ] && SYS_PROMPT="$(sed '1,/^---$/d;/^---$/,$d' "$HOME/cchm/agents/dispatcher.md")"
+
+# 注入當前專案進度：使用者問「做到哪」時不必再全 repo 探索（實測省掉一半以上回合）
+for f in notes/roadmap.md docs/DECISIONS.md; do
+  if [ -r "$f" ]; then
+    SYS_PROMPT="$SYS_PROMPT
+
+## 目前專案進度（從 $f 自動注入，回答進度問題直接用這個，不要掃 repo）
+$(tail -n 40 "$f")"
+    break
+  fi
+done
+case "$SYS_PROMPT" in
+  *"目前專案進度"*) ;;
+  *) SYS_PROMPT="$SYS_PROMPT
+
+## 專案探索紀律
+這個目錄沒有 notes/roadmap.md 或 docs/DECISIONS.md。被問到進度時，先跑 git log --oneline -20 與 ls，不要對整個 repo 做 grep／find 掃描。";;
+esac
+[ -n "$SYS_PROMPT" ] && set -- --append-system-prompt "$SYS_PROMPT" "${ARGS[@]}"
 
 exec "$CLAUDE_BIN" \
   --model "$BRAIN" \

@@ -58,8 +58,11 @@ function normalizeModel(model) {
   const m = String(model || '');
   for (const [re, real] of CLAUDE_ALIAS) if (re.test(m)) return real;
   if (/^claude/i.test(m)) return BRAIN;   // 其他 claude-* 一律在地化，不外流成真 Claude
-  if (/^hh-/i.test(m)) return BRAIN;      // 舊的重道別名，已無意義
-  return m;
+  if (/^hh-/i.test(m)) return BRAIN;      // 舊的重車道別名，已無意義
+  if (m in COST_PER_M) return m;          // 已知的 Silk 模型照原樣
+  // 其他一律回預設：舊 session（mimo-…）、打錯的名字都不該讓上游回 404 而卡住整輪
+  if (m) console.log(`[cchm] 未知模型 ${m} → 改用 ${BRAIN}`);
+  return BRAIN;
 }
 
 // 單價（USD per 1M：[input, output, cacheRead]），來源 Silk llms.txt / models 頁
