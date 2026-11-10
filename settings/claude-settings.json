@@ -42,18 +42,23 @@
   "skipDangerousModePermissionPrompt": true,
   "model": "claude-sonnet-4-5",
   "modelPicker": {
+    "replaceBuiltInOptions": true,
     "options": [
       {
         "model": "claude-sonnet-4-5",
-        "label": "調度腦（MiMo 2.6 Flash / wildwest）",
-        "description": "主對話：只拆解、派工、驗收，不自己寫碼"
+        "label": "DeepSeek V4.1 1017 uncensored（Silk，預設・腦與手同一顆）",
+        "description": "實際送往 api.silkcompute.com：deepseek-v4.1-flash-1017-uncensored"
       },
       {
-        "model": "claude-haiku-4-5",
-        "label": "工作手（DeepSeek 1017 nitro / openrouter）",
-        "description": "subagent：實際寫碼、跑測試、除錯"
+        "model": "glm-5.3-uncensored",
+        "label": "GLM-5.3 uncensored（Silk，貴 7 倍）",
+        "description": "跑分略高（Vals Index 53.5 vs 51.3），只在硬任務時切"
+      },
+      {
+        "model": "kimi-k3.1-pro-uncensored",
+        "label": "Kimi K3.1 Pro uncensored（Silk，最貴）",
+        "description": "最強推理，$5/$15 per 1M，非必要不用"
       }
-    ],
-    "replaceBuiltInOptions": true
+    ]
   }
 }

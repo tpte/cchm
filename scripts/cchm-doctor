@@ -51,6 +51,17 @@ for pair in "brain:claude-sonnet-4-5" "worker:claude-haiku-4-5" "pro:kimi-k3.1-p
   fi
 done
 
+# 3.9) settings 假名 → 實際模型 一致性
+SETTINGS="$HOME/cchm/settings/claude-settings.json"
+if [[ -r "$SETTINGS" ]]; then
+  ALIAS="$(sed -n 's/.*"ANTHROPIC_MODEL": *"\([^"]*\)".*/\1/p' "$SETTINGS" | head -1)"
+  SPEC="$(curl -s --max-time 30 -X POST "$BASE/v1/messages" -H 'content-type: application/json' \
+    -H "x-api-key: $TOKEN" \
+    -d "{\"model\":\"$ALIAS\",\"max_tokens\":8,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" \
+    | sed -n 's/.*"model":"\([^"]*\)".*/\1/p' | head -1)"
+  if [[ -n "$SPEC" ]]; then ok "settings 的 $ALIAS → 實際 $SPEC"; else bad "settings 的 $ALIAS 對不到實際模型"; fi
+fi
+
 # 4) count_tokens（OpenRouter 車道原本會 404，這裡要回 200 且有 input_tokens）
 CT="$(curl -s --max-time 20 -X POST "$BASE/v1/messages/count_tokens" \
   -H 'content-type: application/json' -H "x-api-key: $TOKEN" \

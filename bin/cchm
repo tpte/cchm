@@ -65,6 +65,11 @@ case "$HEALTH" in
   *) echo "cchm: router 沒起來（$PORT）。查：systemctl --user status cchm-router.service" >&2; exit 1 ;;
 esac
 
+# 印一行「實際會用的模型」，因為 Claude Code 介面只會顯示 claude-* 假名
+ACTUAL_BRAIN="$(printf '%s' "$HEALTH" | sed -n 's/.*"brain":"\([^"]*\)".*/\1/p')"
+ACTUAL_UP="$(printf '%s' "$HEALTH" | sed -n 's/.*"upstream":"\([^"]*\)".*/\1/p')"
+[ -n "$ACTUAL_BRAIN" ] && printf 'cchm → %s（%s）\n' "$ACTUAL_BRAIN" "${ACTUAL_UP:-?}" >&2
+
 CLAUDE_BIN="${CCHM_CLAUDE_BIN:-$HOME/.local/share/mise/shims/claude}"
 [ -x "$CLAUDE_BIN" ] || CLAUDE_BIN="$(command -v claude || true)"
 [ -n "$CLAUDE_BIN" ] || { echo "cchm: 找不到 claude" >&2; exit 1; }
