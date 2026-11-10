@@ -22,6 +22,12 @@ scripts/bench-lanes.py     # A/B 比較「主對話固定 + 工作手換模型�
                            #   --only A,B1  --tasks T1,T3；結果寫 .exp/logs/bench-*.json
 ```
 
+## 跨 repo／多模組規則（強制）
+
+每次改動先宣告影響面（repos／modules／呼叫者／測試／未改但受影響），再動手。協定全文：`docs/IMPACT_PROTOCOL.md`。
+跨 repo 依「被依賴者先」排序；共用檔一次一個持有者；verifier 比對 diff 抓漏報。
+YuleCity 相關 repo 清單與工具：`~/Projects/yulecity/engineering/docs/ORG_MAP.md`、`scripts/agent/nav`。
+
 ## 怎麼改
 
 - **加一個模型或換上游**：改 `src/router.mjs` 的 `CLAUDE_ALIAS`／`ALIAS_MAP`／`routeFor`。
@@ -54,6 +60,7 @@ scripts/bench-lanes.py     # A/B 比較「主對話固定 + 工作手換模型�
 | `bin/cchm-exp` | 自我改造沙箱（改 router 前先在那裡試） |
 | `settings/claude-settings.json` | Claude Code 設定（模型別名、權限、deny 清單） |
 | `agents/*.md` | dispatcher（系統提示）、cchm-hacker、cchm-verifier、cchm-heavy |
+| `docs/IMPACT_PROTOCOL.md` | 跨 repo／多模組影響面宣告協定 |
 | `scripts/cchm-doctor` | 自檢腳本 |
 | `deploy/cchm-router.service` | systemd user unit 樣板 |
 | `~/.claude/agents/cchm-*.md` | agent 定義的安裝位置（從 `agents/` 複製） |
