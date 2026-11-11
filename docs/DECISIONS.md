@@ -196,3 +196,25 @@
 - **未解**：Silk 沒有官方併發文件、也沒有 Retry-After，上限 8 是行為實測；要更快只能升方案或分流到第二家（等同恢復 D014 推翻的多上游）。
 - **狀態**：有效
 
+## D017 對話無法繼續的 400 是「歷史 base64 截圖撐爆 context」，router 補三級自動修復
+
+- **問題**：既有 Claude Code 對話（YULECITY 投資人簡報）從 15:36 起每輪都 400，重試 12 次全失敗，使用者問「為什麼、能不能繼續」。
+- **不是什麼**（先排除）：參數沒變（`max_tokens` 64000、`thinking.budget_tokens` 63999 與 13:25 成功那次完全相同）、額度正常、router 與網路正常；上游錯誤 body 只有 198B 的通用字串 `The model could not accept this request…the message format`，沒有細節。
+- **根因（實測，非推論）**：把 router 攔到的原始請求 dump 出來分析（11.9MB）：
+  - 343 則訊息、172 個 `tool_result`，其中 **48 張 base64 PNG 截圖**（單張 325–552KB），messages 合計 **11.5MB ≈ 340 萬 token**
+  - system 30KB、tools 169KB，結構本身完全正常（角色交替、無孤兒工具、無空 block、cache_control 僅 2 個）
+  - 也就是 Claude Code 把每次視覺驗收的截圖原樣留在對話歷史，累積到遠超模型上限後，上游對**每一輪**都回 400，壞資料留在歷史裡所以永遠救不回來
+- **改動**（`src/router.mjs` v0.3.2）：
+  - 4xx 先收完整錯誤 body：寫 `logs/upstream-errors.jsonl`、console 印前 400 字，不再直接丟棄
+  - 三級自動修復（`CCHM_SANITIZE_400=1` 預設開，`CCHM_MAX_REPAIR=3`）：
+    1. 正規化：thinking budget 收進 `max_tokens-1024`、剝歷史 thinking block、移除孤兒 `tool_use`／`tool_result`、收掉空訊息與連續同角色、**剝除歷史 base64 圖片**（換成 `[歷史截圖已省略：NKB]` 佔位，單一字串 tool_result 超過 200KB 截斷）
+    2. 移除 `thinking`／`context_management`／`metadata`、`max_tokens` 降到 32000、剝 `anthropic-beta` header
+    3. 只留最小欄位組（model／messages／system／max_tokens／stream／temperature／top_p／stop_sequences／tools／tool_choice）並把 `max_tokens` 壓到 8192
+  - 超過 `CCHM_MAX_PROMPT_CHARS`（預設 400000 字元）時從最舊訊息丟，保留開頭一則與最後 30 則並重新合併角色
+  - 修復用盡仍 400 時把原始請求寫 `logs/failed-request.json`（`CCHM_DUMP_FAILED=0` 可關）
+- **驗證**：同一個原本 12 次全 400 的對話，`claude -p --resume` 一次就 200（`in=120891`、11.4 秒），對話自己回報「43 頁版已改完驗過，還沒 commit／推上去」；正常請求（新對話）仍 200，未受影響。
+- **代價**：被剝掉的歷史截圖模型看不到（不影響推理，只是少了視覺證據）；第 2、3 級會拿掉 thinking 與 beta 功能，等於降級回覆；丟最舊訊息會少掉早期上下文。
+- **回退**：`CCHM_SANITIZE_400=0` 環境變數即可完全關閉自動修復（仍保留錯誤記錄）。
+- **教訓**：把截圖留在主對話歷史會以 base64 等比放大 context；視覺驗收應該在子代理裡做、只回一句結論，圖不要進主串。
+- **狀態**：有效
+
