@@ -12,10 +12,13 @@ import https from 'node:https';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const VERSION = '0.3.2';
+const VERSION = '0.3.3';
 const PORT = Number(process.env.CCHM_PORT || 8791);
 const STARTED = Date.now();
+// 被 import（測試）時不啟動伺服器，也不要因為沒有金鑰就 exit
+const IS_MAIN = !!process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
 
 /* ── 金鑰 ─────────────────────────────────────────────── */
 function readKey(envFile, keyName) {
@@ -31,7 +34,7 @@ const SILK_KEY =
   readKey(`${process.env.HOME}/.hermes/.secrets/silk.env`, 'SILK_API_KEY') ||
   readKey(`${process.env.HERMES_ENV_FILE || `${process.env.HOME}/.hermes/.env`}`, 'SILK_API_KEY');
 
-if (!SILK_KEY) {
+if (!SILK_KEY && IS_MAIN) {
   console.error('[cchm] 缺 SILK_API_KEY（~/.hermes/.secrets/silk.env）');
   process.exit(1);
 }
@@ -307,6 +310,61 @@ function repairFor400(parsed, stage = 1) {
       parsed.messages = joined;
       if (dropped) notes.push(`丟棄最舊訊息 ${dropped} 則（${Math.round(size() / 1024)}KB）`);
     }
+
+    // 5d. 還是超長（訊息很少但每則巨大，例如單則 5MB 的 tool_result、貼上的長文）：
+    //     原本這裡只處理「>31 則」的情況，少則數但超大就一路 400。先把舊訊息整則丟到只剩最後一則。
+    if (size() > LIMIT) {
+      let dropped = 0;
+      // 一次丟到「下一個 user 訊息」開頭，既能縮小又不會留成 assistant 開頭／空陣列
+      while (size() > LIMIT) {
+        const nextUser = parsed.messages.findIndex((m, i) => i > 0 && m.role === 'user');
+        if (nextUser <= 0) break;                       // 丟不動了 → 交給 5e 截斷
+        parsed.messages = parsed.messages.slice(nextUser);
+        dropped += nextUser;
+      }
+      if (dropped) {
+        notes.push(`訊息過少仍超長，丟棄較舊訊息 ${dropped} 則`);
+        // 丟訊息會切斷工具配對，重新收掉孤兒，否則下一輪照樣 400
+        const useIds = new Set(), resIds = new Set();
+        for (const m of parsed.messages) {
+          if (!Array.isArray(m.content)) continue;
+          for (const b of m.content) {
+            if (b?.type === 'tool_use' && b.id) useIds.add(b.id);
+            if (b?.type === 'tool_result' && b.tool_use_id) resIds.add(b.tool_use_id);
+          }
+        }
+        let orphans = 0;
+        for (const m of parsed.messages) {
+          if (!Array.isArray(m.content)) continue;
+          const before = m.content.length;
+          m.content = m.content.filter((b) => {
+            if (b?.type === 'tool_use') return resIds.has(b.id);
+            if (b?.type === 'tool_result') return useIds.has(b.tool_use_id);
+            return true;
+          });
+          orphans += before - m.content.length;
+        }
+        if (orphans) notes.push(`重新收掉孤兒工具區塊 ${orphans} 個`);
+      }
+    }
+
+    // 5e. 只剩一則仍超長：截斷超長文字塊，至少讓請求送得出去（原本這種情況直接回 400）
+    if (size() > LIMIT) {
+      const TRIM = 8000;
+      const cutOf = (s) => (typeof s === 'string' && s.length > TRIM ? s.length - TRIM : 0);
+      let cut = 0;
+      const shrinkBlock = (b) => {
+        if (cutOf(b?.text)) { cut += cutOf(b.text); b.text = b.text.slice(0, TRIM) + '\n[內容過長已截斷]'; }
+        else if (cutOf(b?.content)) { cut += cutOf(b.content); b.content = b.content.slice(0, TRIM) + '\n[內容過長已截斷]'; }
+        else if (Array.isArray(b?.content)) b.content.forEach(shrinkBlock);
+      };
+      for (const m of parsed.messages) {
+        if (size() <= LIMIT) break;
+        if (cutOf(m.content)) { cut += cutOf(m.content); m.content = m.content.slice(0, TRIM) + '\n[訊息過長已截斷]'; }
+        else if (Array.isArray(m.content)) m.content.forEach(shrinkBlock);
+      }
+      if (cut) notes.push(`截斷過長內容 ${Math.round(cut / 1024)}KB（剩 ${Math.round(size() / 1024)}KB）`);
+    }
   }
 
   // 5b. 第三級：只留最小可用欄位
@@ -318,7 +376,13 @@ function repairFor400(parsed, stage = 1) {
     notes.push('只保留最小欄位組');
   }
 
-  if (!notes.length && stage === 1) return null;
+  // 第 1 級沒有任何可修項時不要放棄：直接降到下一級（參數降級 → 最小欄位）。
+  // 原本這裡 return null，等於「格式乾淨但就是太大」的請求永遠試不到降級，一路 400。
+  if (!notes.length) {
+    if (stage === 1) return repairFor400(parsed, 2);
+    if (stage === 2) return repairFor400(parsed, 3);
+    return null;
+  }
   return { body: parsed, notes };
 }
 
@@ -485,6 +549,10 @@ const server = http.createServer((req, res) => {
   });
 });
 
-server.on('error', (e) => { console.error('[cchm] listen 失敗:', e.message); process.exit(1); });
-server.listen(PORT, '127.0.0.1', () => console.log(`[cchm] router ${VERSION} on http://127.0.0.1:${PORT} → ${UPSTREAM.host}`));
-for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { server.close(); setTimeout(() => process.exit(0), 100); });
+if (IS_MAIN) {
+  server.on('error', (e) => { console.error('[cchm] listen 失敗:', e.message); process.exit(1); });
+  server.listen(PORT, '127.0.0.1', () => console.log(`[cchm] router ${VERSION} on http://127.0.0.1:${PORT} → ${UPSTREAM.host}`));
+  for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { server.close(); setTimeout(() => process.exit(0), 100); });
+}
+
+export { repairFor400, normalizeModel, VERSION };

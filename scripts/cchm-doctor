@@ -4,10 +4,11 @@
 #       CCHM_PORT=8792 scripts/cchm-doctor
 set -uo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # worktree 裡跑也要看自己的 log／settings
 PORT="${CCHM_PORT:-8791}"
 BASE="http://127.0.0.1:$PORT"
 TOKEN="${CCHM_REQUIRE_TOKEN:-cchm-local}"
-USAGE="${CCHM_USAGE_FILE:-$HOME/cchm/.exp/logs/usage.jsonl}"
+USAGE="${CCHM_USAGE_FILE:-$ROOT/.exp/logs/usage.jsonl}"
 fail=0
 
 hr() { printf '%s\n' "──────────────────────────────────────────────"; }
@@ -21,9 +22,12 @@ hr
 H="$(curl -s --max-time 3 "$BASE/healthz" -H "x-api-key: $TOKEN" || true)"
 if [[ "$H" == *'"ok":true'* ]]; then
   VER="$(sed -n 's/.*"version":"\([^"]*\)".*/\1/p' <<<"$H")"
-  WB="$(sed -n 's/.*"wildwest":\(true\|false\).*/\1/p' <<<"$H")"
-  OR="$(sed -n 's/.*"openrouter":\(true\|false\).*/\1/p' <<<"$H")"
-  ok "router $VER 在跑（金鑰 ww=$WB openrouter=$OR）"
+  UP="$(sed -n 's/.*"upstream":"\([^"]*\)".*/\1/p' <<<"$H")"
+  BR="$(sed -n 's/.*"brain":"\([^"]*\)".*/\1/p' <<<"$H")"
+  WK="$(sed -n 's/.*"worker":"\([^"]*\)".*/\1/p' <<<"$H")"
+  AU="$(sed -n 's/.*"auth":"\([^"]*\)".*/\1/p' <<<"$H")"
+  ok "router $VER 在跑（上游 $UP、auth=$AU）"
+  printf '     腦 %s\n     手 %s\n' "${BR:-?}" "${WK:-?}"
 else
   bad "router 沒回應（$BASE/healthz）→ systemctl --user status cchm-router.service"
   hr; exit 1
@@ -52,7 +56,7 @@ for pair in "brain:claude-sonnet-4-5" "worker:claude-haiku-4-5" "pro:kimi-k3.1-p
 done
 
 # 3.9) settings 假名 → 實際模型 一致性
-SETTINGS="$HOME/cchm/settings/claude-settings.json"
+SETTINGS="$ROOT/settings/claude-settings.json"
 if [[ -r "$SETTINGS" ]]; then
   ALIAS="$(sed -n 's/.*"ANTHROPIC_MODEL": *"\([^"]*\)".*/\1/p' "$SETTINGS" | head -1)"
   SPEC="$(curl -s --max-time 30 -X POST "$BASE/v1/messages" -H 'content-type: application/json' \
